@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Geist:wght@500;600&amp;family=Inter:wght@400;500;600&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base{html,body{margin:0;padding:0;}body{overscroll-behavior:none;}main>:first-child{margin-top:0!important;}main>:last-child{margin-bottom:0!important;}}::-webkit-scrollbar{display:none;}</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config={darkMode:"class",theme:{extend:{colors:{"surface-container-high":"#e1e8fd","on-secondary-fixed-variant":"#0039b5","primary-container":"#0f2a4a","on-primary-fixed":"#001c3a","primary-fixed":"#d4e3ff","on-tertiary-fixed-variant":"#005137","surface-tint":"#485f82","on-surface-variant":"#43474e","inverse-surface":"#293040","tertiary-fixed":"#85f8c4","on-secondary":"#ffffff","secondary-fixed":"#dce1ff","on-tertiary":"#ffffff","surface-dim":"#d3daef","tertiary-fixed-dim":"#68dba9","primary-fixed-dim":"#b0c8f0","inverse-primary":"#b0c8f0","outline":"#74777f","on-tertiary-container":"#24a375","on-primary":"#ffffff","on-secondary-container":"#fffbff","surface-container-highest":"#dce2f7","on-primary-container":"#7a92b7","outline-variant":"#c4c6cf","tertiary-container":"#00301f","primary":"#00152f","error-container":"#ffdad6","surface-container-low":"#f1f3ff","secondary":"#1d4ed8","on-primary-fixed-variant":"#304869","surface-variant":"#dce2f7","on-tertiary-fixed":"#002114","on-background":"#141b2b","secondary-fixed-dim":"#b7c4ff","surface-container":"#e9edff","tertiary":"#00190e","surface-container-lowest":"#ffffff","error":"#ba1a1a","surface-bright":"#f9f9ff","inverse-on-surface":"#edf0ff","on-error":"#ffffff","surface":"#f9f9ff","on-secondary-fixed":"#001551","secondary-container":"#4069f2","on-surface":"#141b2b","background":"#f9f9ff","on-error-container":"#93000a"},borderRadius:{DEFAULT:"0.125rem",lg:"0.25rem",xl:"0.5rem",full:"0.75rem"},spacing:{"space-sm":"0.5rem",gutter:"1rem","space-md":"0.75rem",margin:"1.5rem","margin-mobile":"0.75rem","space-xl":"1.5rem","space-xs":"0.25rem","space-lg":"1rem","gutter-dense":"0.5rem"},fontFamily:{"body-lg":["Inter"],"label-sm":["Inter"],"headline-xl":["Geist"],"label-md":["Inter"],"body-sm":["Inter"],"tabular-code":["JetBrains Mono"],"body-md":["Inter"],"tabular-marks":["JetBrains Mono"],"headline-lg":["Geist"],"headline-sm":["Geist"]},fontSize:{"body-lg":["15px",{lineHeight:"22px",fontWeight:"400"}],"label-sm":["11px",{lineHeight:"14px",letterSpacing:"0.02em",fontWeight:"500"}],"headline-xl":["28px",{lineHeight:"34px",letterSpacing:"-0.02em",fontWeight:"600"}],"label-md":["12px",{lineHeight:"16px",letterSpacing:"0.01em",fontWeight:"500"}],"body-sm":["12px",{lineHeight:"16px",fontWeight:"400"}],"tabular-code":["12px",{lineHeight:"16px",fontWeight:"400"}],"body-md":["13px",{lineHeight:"18px",fontWeight:"400"}],"tabular-marks":["14px",{lineHeight:"18px",letterSpacing:"-0.01em",fontWeight:"500"}],"headline-lg":["22px",{lineHeight:"28px",letterSpacing:"-0.015em",fontWeight:"600"}],"headline-sm":["16px",{lineHeight:"22px",letterSpacing:"-0.01em",fontWeight:"600"}]}}}};</script></head><body class="bg-background font-body-md text-on-surface antialiased"><aside class="fixed left-0 top-0 h-screen w-64 bg-surface-container-lowest border-r border-outline-variant z-50 flex flex-col justify-between select-none"><div class="flex flex-col"><div class="h-14 px-gutter flex items-center justify-between border-b border-outline-variant"><div class="flex items-center gap-space-sm"><span class="font-headline-sm text-headline-sm font-semibold tracking-tight text-primary">check<span class="text-secondary">R</span></span><span class="font-label-sm text-label-sm px-space-xs py-0.5 rounded bg-surface-container text-on-surface-variant font-medium border border-outline-variant">Academic v2.4</span></div></div><div class="p-space-md"><div class="font-label-sm text-label-sm uppercase tracking-wider text-outline px-space-sm pb-space-xs font-semibold">Evaluation Hub</div><nav class="flex flex-col gap-0.5" data-active-classes="bg-primary-container text-on-primary-container font-medium"><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-md text-body-md" data-path="dashboard" href="#"><span class="material-symbols-outlined text-[18px]">dashboard</span><span>Dashboard</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-md text-body-md" data-path="examinations" href="#"><span class="material-symbols-outlined text-[18px]">menu_book</span><span>Examinations</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-md text-body-md" data-path="answer-sheets" href="#"><span class="material-symbols-outlined text-[18px]">description</span><span>Answer Sheets</span></a><a aria-current="page" class="flex items-center justify-between px-space-sm py-1.5 rounded transition-colors bg-primary-container text-on-primary-container font-medium" data-path="evaluation" href="#"><div class="flex items-center gap-space-sm"><span class="material-symbols-outlined text-[18px]">check_box</span><span>Evaluation</span></div><span class="font-label-sm text-label-sm px-1.5 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200 font-tabular-code">24 pending</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-md text-body-md" data-path="results" href="#"><span class="material-symbols-outlined text-[18px]">bar_chart</span><span>Results</span></a><a class="flex items-center gap-space-sm px-space-sm py-1.5 rounded text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface transition-colors font-body-md text-body-md" data-path="settings" href="#"><span class="material-symbols-outlined text-[18px]">settings</span><span>Settings</span></a></nav></div></div><div class="flex flex-col border-t border-outline-variant bg-surface-container-lowest"><div class="px-gutter py-space-sm border-b border-outline-variant bg-surface-container-low"><div class="flex items-center justify-between text-on-surface-variant"><span class="font-label-sm text-label-sm text-outline font-medium">ACTIVE SESSION</span><span class="w-1.5 h-1.5 rounded-full bg-emerald-600"></span></div><div class="font-body-sm text-body-sm text-on-surface font-medium mt-0.5">Fall 2026 • Midterm</div></div><div class="px-gutter py-space-md flex flex-col gap-space-xs"><div class="flex items-start justify-between gap-space-xs"><div><div class="font-body-sm text-body-sm font-semibold text-on-surface truncate">Dr. Evelyn Reed</div><div class="font-label-sm text-label-sm text-on-surface-variant truncate">Dept. of Computer Science</div></div><span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200">Evaluating</span></div><div class="mt-space-xs flex items-center justify-between text-outline"><span class="font-label-sm text-label-sm flex items-center gap-1"><span class="font-tabular-code px-1 py-0.5 rounded bg-surface-container border border-outline-variant text-[10px]">?</span> Keyboard shortcuts</span><span class="material-symbols-outlined text-[16px] hover:text-on-surface cursor-pointer">help_outline</span></div></div></div></aside><div class="pl-64"><header class="fixed top-0 left-64 right-0 h-14 bg-surface-container-lowest/90 backdrop-blur-md border-b border-outline-variant z-40 flex items-center justify-between px-gutter"><div class="flex items-center gap-space-xs text-on-surface-variant font-body-sm text-body-sm"><span class="hover:text-on-surface cursor-pointer">checkR</span><span class="text-outline">/</span><span class="hover:text-on-surface cursor-pointer">Fall 2026</span><span class="text-outline">/</span><span class="text-on-surface font-medium">Examination Operations</span></div><div class="flex items-center gap-space-md"><div class="flex items-center gap-space-xs text-on-surface-variant font-label-md text-label-md px-space-sm py-1 rounded bg-surface-container-low border border-outline-variant"><span class="w-2 h-2 rounded-full bg-emerald-600"></span><span>System Live</span></div><div class="h-4 w-px bg-outline-variant"></div><button class="flex items-center justify-center p-1 rounded text-on-surface-variant hover:text-on-surface hover:bg-surface-container-low transition-colors"><span class="material-symbols-outlined text-[20px]">notifications</span></button><img alt="Profile" class="w-8 h-8 rounded-full object-cover border border-outline-variant" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDISzjaug2TSJyW7U9Q4kuGk1wLZ9_hRQ0tL-rU6XS_CPSlmEOqdGDMnmtJWI6qWl8Fed_ouMVa-i8VUuvgFKZCAQ-TRouo6k6hkbygPa4nZIv-AQFrpT7Vu48UkQqFb3iH9DwvTaBlDIYkUNshoCDsmZMzteu81l16LQYbrBXwAqsvEbK-e-kRAZXIkknLfta3IOVeByxYtVLJwIvx_iozUlnOhztvbYN6zHS77ZQZX-Cv4uTQT0UM"/></div></header><main class="w-full pt-14 bg-background min-h-screen"><div class="flex flex-col w-full h-[calc(100vh-3.5rem)] overflow-hidden bg-surface select-none">
+<!-- Top Workspace Operations Header -->
+<header class="h-14 bg-surface-container-lowest px-gutter flex items-center justify-between shadow-sm z-30 shrink-0 gap-space-md">
+<!-- Breadcrumb & Candidate Info -->
+<div class="flex items-center gap-space-sm min-w-0">
+<nav class="flex items-center gap-1.5 text-on-surface-variant font-body-sm text-body-sm">
+<span class="hover:text-on-surface cursor-pointer">Examinations</span>
+<span class="text-outline">/</span>
+<span class="hover:text-on-surface cursor-pointer font-medium text-on-surface">CS201 Data Structures</span>
+<span class="text-outline">/</span>
+</nav>
+<div class="flex items-center gap-space-xs bg-surface-container px-2 py-0.5 rounded shadow-sm">
+<span class="material-symbols-outlined text-[16px] text-secondary">person</span>
+<span class="font-headline-sm text-label-md font-semibold text-primary">Marcus Vance</span>
+<span class="font-tabular-code text-label-sm text-on-surface-variant bg-surface-container-lowest px-1 py-0.2 rounded font-medium">2026-CS-084</span>
+<span class="font-label-sm text-label-sm text-outline px-1">Sheet 42/120</span>
+</div>
+<!-- Student Pager -->
+<div class="flex items-center gap-1 ml-space-xs">
+<button class="h-7 px-2 flex items-center gap-0.5 rounded bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors font-label-sm text-label-sm shadow-sm" title="Previous Candidate">
+<span class="material-symbols-outlined text-[14px]">chevron_left</span> Prev
+        </button>
+<button class="h-7 px-2 flex items-center gap-0.5 rounded bg-surface-container-low hover:bg-surface-container-high text-on-surface transition-colors font-label-sm text-label-sm shadow-sm" title="Next Candidate">
+          Next <span class="material-symbols-outlined text-[14px]">chevron_right</span>
+</button>
+</div>
+</div>
+<!-- Quick Shortcuts Legend (Mid Bar) -->
+<div class="hidden xl:flex items-center gap-3 bg-surface-container-low px-3 py-1 rounded">
+<div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm">
+<kbd class="px-1 py-0.5 rounded bg-surface-container-lowest font-tabular-code text-on-surface text-[10px] shadow-sm">N</kbd>
+<span>Next Q</span>
+</div>
+<div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm">
+<kbd class="px-1 py-0.5 rounded bg-surface-container-lowest font-tabular-code text-on-surface text-[10px] shadow-sm">P</kbd>
+<span>Prev Q</span>
+</div>
+<div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm">
+<kbd class="px-1 py-0.5 rounded bg-surface-container-lowest font-tabular-code text-on-surface text-[10px] shadow-sm">A</kbd>
+<span>Accept</span>
+</div>
+<div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm">
+<kbd class="px-1 py-0.5 rounded bg-surface-container-lowest font-tabular-code text-on-surface text-[10px] shadow-sm">E</kbd>
+<span>Edit</span>
+</div>
+<div class="flex items-center gap-1 text-on-surface-variant font-label-sm text-label-sm">
+<kbd class="px-1 py-0.5 rounded bg-surface-container-lowest font-tabular-code text-on-surface text-[10px] shadow-sm">F</kbd>
+<span>Flag</span>
+</div>
+</div>
+<!-- Total Score & Actions -->
+<div class="flex items-center gap-space-md shrink-0">
+<div class="flex items-center gap-2 bg-surface-container-high px-2.5 py-1 rounded">
+<span class="font-label-sm text-label-sm uppercase tracking-wide text-on-surface-variant font-medium">Running Total</span>
+<div class="flex items-baseline gap-1">
+<span class="font-tabular-marks text-headline-sm font-semibold text-primary">58.0</span>
+<span class="font-tabular-code text-label-sm text-outline">/ 75.0</span>
+</div>
+<span class="font-label-sm text-[10px] px-1 py-0.2 rounded bg-amber-100 text-amber-900 font-medium">Tentative</span>
+</div>
+<div class="flex items-center gap-1.5">
+<button class="h-8 px-3 rounded bg-surface-container-low hover:bg-surface-container text-on-surface font-body-sm text-body-sm font-medium transition-colors shadow-sm">
+          Save Draft
+        </button>
+<button class="h-8 px-3.5 rounded bg-primary text-on-primary hover:bg-secondary font-body-sm text-body-sm font-semibold transition-colors shadow-sm flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px]">task_alt</span>
+<span>Finalize Sheet</span>
+</button>
+</div>
+</div>
+</header>
+<!-- WORKSPACE BODY: 3-PANEL INTERFACE -->
+<div class="flex-1 flex overflow-hidden w-full relative">
+<!-- ========================================== -->
+<!-- PANEL 1: LEFT NAVIGATOR (Questions Roster) -->
+<!-- ========================================== -->
+<aside class="w-64 bg-surface-container-lowest flex flex-col shrink-0 z-10 shadow-sm overflow-hidden">
+<!-- Section Title & Filter -->
+<div class="p-space-sm bg-surface-container-low flex flex-col gap-1.5">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-primary">list_alt</span>
+<span class="font-headline-sm text-label-md font-semibold text-primary uppercase tracking-wider">Question Roster</span>
+</div>
+<span class="font-tabular-code text-label-sm bg-surface-container px-1.5 py-0.5 rounded text-on-surface-variant font-semibold">6 Total</span>
+</div>
+<label class="flex items-center gap-2 cursor-pointer pt-1">
+<input class="rounded text-primary focus:ring-0 w-3.5 h-3.5 cursor-pointer accent-primary" id="filterReviewOnly" type="checkbox"/>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Review needed only</span>
+</label>
+</div>
+<!-- Question List -->
+<div class="flex-1 overflow-y-auto divide-y-0 p-1.5 flex flex-col gap-1"><!-- Q1 -->
+<div class="px-3 py-2.5 rounded hover:bg-surface-container-low cursor-pointer transition-colors flex items-center justify-between text-on-surface group">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+<span class="font-body-sm text-body-sm font-medium text-on-surface truncate">Q1 Asymptotic Big-O</span>
+</div>
+<span class="font-label-sm text-[11px] text-outline pl-3">Reviewed</span>
+</div>
+<span class="font-tabular-marks text-body-sm font-medium text-on-surface shrink-0">5 / 5</span>
+</div>
+<!-- Q2 -->
+<div class="px-3 py-2.5 rounded hover:bg-surface-container-low cursor-pointer transition-colors flex items-center justify-between text-on-surface group">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+<span class="font-body-sm text-body-sm font-medium text-on-surface truncate">Q2 Double Hashing</span>
+</div>
+<span class="font-label-sm text-[11px] text-outline pl-3">Reviewed</span>
+</div>
+<span class="font-tabular-marks text-body-sm font-medium text-on-surface shrink-0">8 / 10</span>
+</div>
+<!-- Q3 -->
+<div class="px-3 py-2.5 rounded hover:bg-surface-container-low cursor-pointer transition-colors flex items-center justify-between text-on-surface group">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-600 shrink-0"></span>
+<span class="font-body-sm text-body-sm font-medium text-on-surface truncate">Q3 Min-Heap Insertion</span>
+</div>
+<span class="font-label-sm text-[11px] text-outline pl-3">Reviewed</span>
+</div>
+<span class="font-tabular-marks text-body-sm font-medium text-on-surface shrink-0">5 / 5</span>
+</div>
+<!-- Q4 Active Question -->
+<div class="px-3 py-2.5 bg-surface-container-low border-l-2 border-secondary cursor-pointer transition-colors flex items-center justify-between text-on-surface">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-amber-600 shrink-0"></span>
+<span class="font-body-sm text-body-sm font-semibold text-primary truncate">Q4 AVL Rotations</span>
+</div>
+<span class="font-label-sm text-[11px] text-amber-800 font-medium pl-3">Needs Review</span>
+</div>
+<span class="font-tabular-marks text-body-sm font-semibold text-primary shrink-0">7 / 10</span>
+</div>
+<!-- Q5 -->
+<div class="px-3 py-2.5 rounded hover:bg-surface-container-low cursor-pointer transition-colors flex items-center justify-between text-on-surface group">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-error shrink-0"></span>
+<span class="font-body-sm text-body-sm font-medium text-on-surface truncate">Q5 B-Tree Node Splits</span>
+</div>
+<span class="font-label-sm text-[11px] text-error pl-3">Low Confidence</span>
+</div>
+<span class="font-tabular-marks text-body-sm text-outline shrink-0">— / 10</span>
+</div>
+<!-- Q6 -->
+<div class="px-3 py-2.5 rounded hover:bg-surface-container-low cursor-pointer transition-colors flex items-center justify-between text-on-surface group">
+<div class="flex flex-col min-w-0 pr-2">
+<div class="flex items-center gap-1.5">
+<span class="w-1.5 h-1.5 rounded-full bg-outline shrink-0"></span>
+<span class="font-body-sm text-body-sm font-medium text-on-surface truncate">Q6 Dijkstra Graph Impl</span>
+</div>
+<span class="font-label-sm text-[11px] text-outline pl-3">Pending Manual</span>
+</div>
+<span class="font-tabular-marks text-body-sm text-outline shrink-0">— / 10</span>
+</div></div>
+<!-- Left Panel Bottom Summary -->
+<div class="p-space-sm bg-surface-container-low flex flex-col gap-1">
+<div class="flex justify-between items-center text-on-surface-variant font-label-sm text-label-sm">
+<span>Evaluated: 3 / 6</span>
+<span class="font-semibold text-primary">50% Complete</span>
+</div>
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-secondary h-full rounded-full" style="width: 50%;"></div>
+</div>
+<div class="text-[10px] text-outline pt-1 flex items-center justify-between">
+<span>Auto-sync active</span>
+<span class="material-symbols-outlined text-[14px] text-emerald-600">cloud_done</span>
+</div>
+</div>
+</aside>
+<!-- ==================================================== -->
+<!-- PANEL 2: CENTER DOCUMENT VIEWER (Handwritten Canvas) -->
+<!-- ==================================================== -->
+<main class="flex-1 flex flex-col bg-surface overflow-hidden relative">
+<!-- Toolbar -->
+<div class="h-11 bg-surface-container-lowest px-gutter flex items-center justify-between shrink-0 shadow-sm z-10"><!-- Zoom & Viewport Controls -->
+<div class="flex items-center gap-1 text-on-surface-variant">
+<button class="w-7 h-7 flex items-center justify-center rounded hover:bg-surface-container text-on-surface transition-colors" id="zoomOutBtn" title="Zoom Out">
+<span class="material-symbols-outlined text-[16px]">remove</span>
+</button>
+<span class="font-tabular-code text-label-sm px-2 py-0.5 text-on-surface font-medium select-none" id="zoomLevelText">100%</span>
+<button class="w-7 h-7 flex items-center justify-center rounded hover:bg-surface-container text-on-surface transition-colors" id="zoomInBtn" title="Zoom In">
+<span class="material-symbols-outlined text-[16px]">add</span>
+</button>
+<div class="h-3.5 w-px bg-outline-variant mx-1.5"></div>
+<button class="px-2.5 h-7 rounded hover:bg-surface-container text-on-surface transition-colors font-label-sm text-label-sm flex items-center gap-1" title="Fit to Page">
+<span class="material-symbols-outlined text-[15px]">crop_free</span>
+<span>Fit</span>
+</button>
+<button class="w-7 h-7 flex items-center justify-center rounded hover:bg-surface-container text-on-surface transition-colors" title="Rotate Manuscript">
+<span class="material-symbols-outlined text-[16px]">rotate_right</span>
+</button>
+</div>
+<!-- Center Document Indicator / Quick Info -->
+<div class="text-label-sm font-label-sm text-outline">
+  Official Manuscript Script • Page 3 of 8
+</div>
+<!-- Pagination Controls -->
+<div class="flex items-center gap-1">
+<button class="h-7 px-2 flex items-center gap-1 rounded hover:bg-surface-container text-on-surface transition-colors font-label-sm text-label-sm" title="Previous Page">
+<span class="material-symbols-outlined text-[14px]">arrow_back</span>
+<span>Prev</span>
+</button>
+<span class="font-tabular-code text-label-sm px-1.5 text-on-surface font-semibold">3 / 8</span>
+<button class="h-7 px-2 flex items-center gap-1 rounded hover:bg-surface-container text-on-surface transition-colors font-label-sm text-label-sm" title="Next Page">
+<span>Next</span>
+<span class="material-symbols-outlined text-[14px]">arrow_forward</span>
+</button>
+</div></div>
+<!-- Canvas Scroll Area -->
+<div class="flex-1 overflow-auto p-space-md flex justify-center items-start bg-surface-container-low" id="canvasViewport">
+<!-- Simulated High-Resolution Scanned Answer Sheet Paper -->
+<div class="w-[780px] min-h-[1080px] bg-[#ffffff] shadow-md rounded relative transition-transform duration-150 origin-top p-12 overflow-hidden" id="paperCanvas" style="box-shadow: 0 4px 18px rgba(0, 21, 47, 0.08);"><!-- Clean Left Ruled Margin Line -->
+<div class="absolute left-16 top-0 bottom-0 w-px bg-outline-variant pointer-events-none opacity-60"></div>
+<!-- Header Watermark/Script Info -->
+<div class="flex items-center justify-between pb-3 border-b border-outline-variant mb-6 select-none">
+<div class="font-tabular-code text-[11px] text-on-surface-variant font-medium tracking-wide">
+    DEPT. OF COMPUTER SCIENCE • MIDTERM EXAM 2026
+  </div>
+<div class="font-tabular-code text-[11px] text-outline">
+    Roll: 2026-CS-084 • Booklet Code: B-402
+  </div>
+</div>
+<!-- Content Container -->
+<div class="pl-8 relative text-[#1e293b]">
+<!-- Question Prompt -->
+<div class="mb-6 pb-2 border-b border-surface-container">
+<span class="font-headline-sm text-body-md font-semibold text-primary">Question 4:</span>
+<span class="font-body-md text-on-surface-variant ml-1">Explain AVL Tree balancing rotations (Left-Left and Left-Right) and show their time complexity derivation. [10 Marks]</span>
+</div>
+<!-- Student Handwritten Work Simulation -->
+<div class="space-y-6 text-[#1e293b]" style="font-family: 'JetBrains Mono', monospace;">
+<!-- Section (a) Balance factor -->
+<div class="relative leading-relaxed">
+<div class="absolute -left-7 top-0 text-emerald-700 font-bold text-sm select-none">✓</div>
+<p class="text-[14px] leading-7" style="font-family: cursive, sans-serif;">
+<span class="font-semibold text-primary">Ans 4) Balance Factor (BF):</span><br/>
+        Defined as the height difference between left and right subtree:<br/>
+<span class="font-mono text-[13px] font-bold text-primary">BF(node) = Height(Left_Child) - Height(Right_Child)</span><br/>
+        For balanced AVL trees, invariant condition is: <span class="font-mono font-bold">BF ∈ {-1, 0, +1}</span>.
+      </p>
+</div>
+<!-- Section (b) LL Rotation -->
+<div class="relative leading-relaxed pt-2">
+<div class="absolute -left-7 top-2 text-emerald-700 font-bold text-sm select-none">✓</div>
+<div class="font-body-sm font-semibold text-primary mb-1">
+        (a) Left-Left (LL) Rotation:
+      </div>
+<p class="text-[13px] leading-6 mb-3" style="font-family: cursive, sans-serif;">
+        Occurs when insertion happens in left subtree of left child. Fixed via single Right Rotation at Z:
+      </p>
+<!-- Hand drawn tree diagram -->
+<div class="py-3 px-4 border border-outline-variant rounded flex items-center justify-around bg-surface-container-lowest max-w-lg">
+<div class="text-center">
+<span class="text-[10px] font-mono text-error font-semibold block mb-1">Unbalanced (BF = +2)</span>
+<svg class="mx-auto" height="95" width="120">
+<line stroke="#1d4ed8" stroke-width="1.5" x1="60" x2="35" y1="15" y2="45"></line>
+<line stroke="#1d4ed8" stroke-width="1.5" x1="35" x2="15" y1="45" y2="75"></line>
+<circle cx="60" cy="15" fill="#ffffff" r="12" stroke="#1e293b" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="60" y="19">Z</text>
+<circle cx="35" cy="45" fill="#ffffff" r="12" stroke="#1e293b" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="35" y="49">Y</text>
+<circle cx="15" cy="75" fill="#ffffff" r="12" stroke="#1e293b" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="15" y="79">X</text>
+</svg>
+</div>
+<div class="flex flex-col items-center">
+<span class="material-symbols-outlined text-[20px] text-outline">trending_flat</span>
+<span class="text-[10px] text-outline font-mono">Right Rotate(Z)</span>
+</div>
+<div class="text-center">
+<span class="text-[10px] font-mono text-emerald-700 font-semibold block mb-1">Balanced (BF = 0)</span>
+<svg class="mx-auto" height="95" width="120">
+<line stroke="#1d4ed8" stroke-width="1.5" x1="60" x2="30" y1="20" y2="55"></line>
+<line stroke="#1d4ed8" stroke-width="1.5" x1="60" x2="90" y1="20" y2="55"></line>
+<circle cx="60" cy="20" fill="#ffffff" r="12" stroke="#059669" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="60" y="24">Y</text>
+<circle cx="30" cy="55" fill="#ffffff" r="12" stroke="#059669" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="30" y="59">X</text>
+<circle cx="90" cy="55" fill="#ffffff" r="12" stroke="#059669" stroke-width="1.5"></circle>
+<text font-size="10" font-weight="bold" text-anchor="middle" x="90" y="59">Z</text>
+</svg>
+</div>
+</div>
+</div>
+<!-- Section (c) LR Rotation -->
+<div class="relative leading-relaxed pt-2">
+<div class="absolute -left-7 top-2 text-error font-bold text-sm select-none">✕</div>
+<div class="font-body-sm font-semibold text-primary mb-1">
+        (b) Left-Right (LR) Rotation:
+      </div>
+<p class="text-[13px] leading-6" style="font-family: cursive, sans-serif;">
+        For LR rotation, we perform a double rotation. Left rotate left-child, followed by Right rotate parent.
+        <span class="line-through text-outline ml-1">Result directly jumps to final root.</span>
+</p>
+</div>
+<!-- Section (d) Time Complexity -->
+<div class="relative leading-relaxed pt-2">
+<div class="absolute -left-7 top-2 text-emerald-700 font-bold text-sm select-none">✓</div>
+<div class="font-body-sm font-semibold text-primary mb-1">
+        (c) Time Complexity Derivation:
+      </div>
+<p class="text-[13px] leading-6 font-mono">
+        Height h ≤ 1.44 log₂(n) ⇒ Tree height is O(log n).<br/>
+        Rotation operations involve O(1) constant pointer re-assignments.<br/>
+        Total Cost = Search + Balancing = O(log n) + O(1) = <span class="font-bold text-primary">O(log n)</span>.
+      </p>
+</div>
+</div>
+</div>
+<!-- Document Footer Margin -->
+<div class="absolute bottom-4 left-16 right-12 flex justify-between items-center text-outline font-tabular-code text-[11px] pt-3 border-t border-outline-variant">
+<span>Midterm Script Copy • CSE201</span>
+<span>Page 3 / 8</span>
+</div></div>
+</div>
+</main>
+<!-- ========================================================== -->
+<!-- PANEL 3: RIGHT PANEL (Evaluation, Rubric & Scoring Deck)   -->
+<!-- ========================================================== -->
+<aside class="w-[390px] bg-surface-container-lowest flex flex-col shrink-0 z-20 shadow-sm overflow-hidden"><!-- 1. Header: Question Title & Max Marks -->
+<div class="px-4 py-3 border-b border-outline-variant flex items-center justify-between shrink-0 bg-surface-container-lowest">
+<div>
+<h2 class="font-headline-sm text-headline-sm font-semibold text-primary leading-tight">Question 4: AVL Rotations</h2>
+<div class="font-label-sm text-label-sm text-outline mt-0.5">Balanced Binary Search Trees</div>
+</div>
+<span class="font-tabular-code text-label-md font-semibold text-primary bg-surface-container-low px-2 py-0.5 rounded border border-outline-variant">Max: 10.0</span>
+</div>
+<!-- Scrollable Body with Clean Hierarchy -->
+<div class="flex-1 overflow-y-auto px-4 py-3 space-y-4 bg-surface-container-lowest text-on-surface">
+<!-- 2. Marking Scheme (simple clean bullet list) -->
+<div class="space-y-1.5 pb-3 border-b border-outline-variant">
+<div class="font-label-sm text-label-sm uppercase tracking-wider text-outline font-semibold">Marking Scheme</div>
+<ul class="font-body-sm text-body-sm space-y-1 text-on-surface-variant">
+<li class="flex justify-between items-center">
+<span>• Balance factor definition</span>
+<span class="font-tabular-code text-on-surface font-medium">2.0</span>
+</li>
+<li class="flex justify-between items-center">
+<span>• LL rotation</span>
+<span class="font-tabular-code text-on-surface font-medium">3.0</span>
+</li>
+<li class="flex justify-between items-center">
+<span>• LR rotation</span>
+<span class="font-tabular-code text-on-surface font-medium">3.0</span>
+</li>
+<li class="flex justify-between items-center">
+<span>• Time complexity</span>
+<span class="font-tabular-code text-on-surface font-medium">2.0</span>
+</li>
+</ul>
+</div>
+<!-- 3. Suggested Mark (clear, not overwhelming) -->
+<div class="flex items-center justify-between bg-surface-container-low p-2.5 rounded border border-outline-variant">
+<div class="flex flex-col">
+<span class="font-label-sm text-label-sm text-outline">Suggested Mark</span>
+<span class="font-label-sm text-[11px] text-emerald-700 font-medium">High confidence</span>
+</div>
+<div class="font-tabular-marks text-headline-lg font-bold text-primary">
+      7.0 <span class="font-label-md text-outline font-normal">/ 10</span>
+</div>
+</div>
+<!-- 4. AI Reasoning (concise 2 lines + compact point list) -->
+<div class="space-y-2 pb-3 border-b border-outline-variant">
+<div class="font-label-sm text-label-sm uppercase tracking-wider text-outline font-semibold">AI Assessment</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-relaxed">
+      Student articulated balance factor and LL rotation correctly, but omitted the intermediate LR rotation diagram.
+    </p>
+<div class="space-y-1 pt-1 font-body-sm text-body-sm">
+<div class="flex items-center justify-between text-emerald-800">
+<span class="flex items-center gap-1.5">
+<span class="text-emerald-700 font-bold">✓</span>
+<span>Balance factor identified</span>
+</span>
+<span class="font-tabular-code font-medium">(+2)</span>
+</div>
+<div class="flex items-center justify-between text-emerald-800">
+<span class="flex items-center gap-1.5">
+<span class="text-emerald-700 font-bold">✓</span>
+<span>LL rotation explained</span>
+</span>
+<span class="font-tabular-code font-medium">(+3)</span>
+</div>
+<div class="flex items-center justify-between text-emerald-800">
+<span class="flex items-center gap-1.5">
+<span class="text-emerald-700 font-bold">✓</span>
+<span>Complexity derived</span>
+</span>
+<span class="font-tabular-code font-medium">(+2)</span>
+</div>
+<div class="flex items-center justify-between text-error">
+<span class="flex items-center gap-1.5">
+<span class="text-error font-bold">×</span>
+<span>LR intermediate step missing</span>
+</span>
+<span class="font-tabular-code font-medium">(-3)</span>
+</div>
+</div>
+</div>
+<!-- 5. Awarded Marks input & Actions -->
+<div class="space-y-2.5">
+<div class="flex items-center justify-between">
+<label class="font-label-md text-label-md font-semibold text-primary" for="awardedMarkInput">Awarded Marks</label>
+<span class="font-label-sm text-label-sm text-outline">0.0 – 10.0</span>
+</div>
+<div class="flex items-center gap-2">
+<div class="relative flex-1">
+<input class="w-full h-11 px-3 bg-surface-container-low border border-outline-variant font-tabular-marks text-headline-sm font-bold text-center text-primary rounded focus:outline-none focus:ring-1 focus:ring-secondary transition-all" id="awardedMarkInput" max="10" min="0" step="0.5" type="number" value="7.0"/>
+</div>
+<div class="flex flex-col gap-1">
+<button class="w-8 h-5 flex items-center justify-center bg-surface-container border border-outline-variant hover:bg-surface-container-high rounded text-on-surface text-[12px] transition-colors" id="incMarkBtn">
+<span class="material-symbols-outlined text-[14px]">expand_less</span>
+</button>
+<button class="w-8 h-5 flex items-center justify-center bg-surface-container border border-outline-variant hover:bg-surface-container-high rounded text-on-surface text-[12px] transition-colors" id="decMarkBtn">
+<span class="material-symbols-outlined text-[14px]">expand_more</span>
+</button>
+</div>
+</div>
+<!-- Action Buttons -->
+<div class="flex flex-col gap-2 pt-1">
+<button class="w-full h-9 bg-primary text-on-primary hover:bg-secondary font-body-sm text-body-sm font-semibold rounded flex items-center justify-center gap-1.5 transition-colors shadow-sm" id="acceptMarkBtn">
+<span class="material-symbols-outlined text-[16px]">check</span>
+<span>Accept Suggestion (A)</span>
+</button>
+<div class="grid grid-cols-2 gap-2">
+<button class="h-8 bg-surface-container-lowest border border-outline-variant hover:bg-surface-container text-on-surface font-label-md text-label-md font-medium rounded flex items-center justify-center gap-1 transition-colors" id="overrideMarkBtn">
+<span class="material-symbols-outlined text-[14px]">edit</span>
+<span>Override (E)</span>
+</button>
+<button class="h-8 bg-surface-container-lowest border border-outline-variant hover:bg-rose-50 text-error font-label-md text-label-md font-medium rounded flex items-center justify-center gap-1 transition-colors" id="flagReviewBtn">
+<span class="material-symbols-outlined text-[14px]">flag</span>
+<span>Flag (F)</span>
+</button>
+</div>
+</div>
+</div>
+<!-- 6. Examiner note / rationale (compact) -->
+<div class="space-y-1 pt-1">
+<label class="font-label-sm text-label-sm text-outline font-medium" for="examinerNote">Examiner Note</label>
+<textarea class="w-full p-2 bg-surface-container-low border border-outline-variant font-body-sm text-body-sm text-on-surface rounded focus:outline-none focus:ring-1 focus:ring-secondary resize-none" id="examinerNote" placeholder="Optional rationale..." rows="2">Agreed with 3-mark point deduction on LR rotation intermediate tree.</textarea>
+</div>
+</div>
+<!-- 7. Keyboard Shortcut Bar Footer -->
+<div class="px-3 py-2 bg-surface-container-low border-t border-outline-variant shrink-0 flex items-center justify-between text-[11px] font-tabular-code text-on-surface-variant">
+<div class="flex items-center gap-2">
+<span><strong class="text-primary">[A]</strong> Accept</span>
+<span><strong class="text-primary">[E]</strong> Override</span>
+<span><strong class="text-primary">[F]</strong> Flag</span>
+<span><strong class="text-primary">[N]</strong> Next</span>
+<span><strong class="text-primary">[P]</strong> Prev</span>
+</div>
+<button class="h-7 px-2.5 bg-primary text-on-primary hover:bg-secondary rounded font-label-sm font-medium transition-colors">
+    Next →
+  </button>
+</div></aside>
+</div>
+</div>
+<!-- Micro-Interactions Script for Keyboard Shortcuts and Canvas Ergonomics -->
+<script>
+  (function initEvaluationWorkspace() {
+    let zoomLevel = 100;
+    const canvas = document.getElementById('paperCanvas');
+    const zoomText = document.getElementById('zoomLevelText');
+    const markInput = document.getElementById('awardedMarkInput');
+
+    // Zooming
+    const applyZoom = (lvl) => {
+      zoomLevel = Math.max(60, Math.min(180, lvl));
+      if (canvas) {
+        canvas.style.transform = `scale(${zoomLevel / 100})`;
+      }
+      if (zoomText) {
+        zoomText.textContent = `${zoomLevel}%`;
+      }
+    };
+
+    document.getElementById('zoomInBtn')?.addEventListener('click', () => applyZoom(zoomLevel + 10));
+    document.getElementById('zoomOutBtn')?.addEventListener('click', () => applyZoom(zoomLevel - 10));
+
+    // Number stepper
+    document.getElementById('incMarkBtn')?.addEventListener('click', () => {
+      const val = parseFloat(markInput.value || 0);
+      if (val < 10) markInput.value = (val + 0.5).toFixed(1);
+    });
+
+    document.getElementById('decMarkBtn')?.addEventListener('click', () => {
+      const val = parseFloat(markInput.value || 0);
+      if (val > 0) markInput.value = (val - 0.5).toFixed(1);
+    });
+
+    // Accept suggestion action feedback
+    const acceptBtn = document.getElementById('acceptMarkBtn');
+    acceptBtn?.addEventListener('click', () => {
+      const originalText = acceptBtn.innerHTML;
+      acceptBtn.classList.remove('bg-primary-container');
+      acceptBtn.classList.add('bg-emerald-700', 'text-white');
+      acceptBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">done_all</span> Mark Accepted (7.0)`;
+      setTimeout(() => {
+        acceptBtn.classList.remove('bg-emerald-700', 'text-white');
+        acceptBtn.classList.add('bg-primary-container');
+        acceptBtn.innerHTML = originalText;
+      }, 1500);
+    });
+
+    // Toggle OCR Overlay visually
+    const ocrBtn = document.getElementById('toggleOcrBtn');
+    let ocrActive = true;
+    ocrBtn?.addEventListener('click', () => {
+      ocrActive = !ocrActive;
+      if (ocrActive) {
+        ocrBtn.className = "px-2 h-7 rounded bg-secondary-fixed text-on-secondary-fixed-variant font-label-sm text-label-sm font-medium flex items-center gap-1 transition-colors";
+        ocrBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">document_scanner</span><span>OCR Overlay [On]</span>`;
+      } else {
+        ocrBtn.className = "px-2 h-7 rounded hover:bg-surface-container text-on-surface-variant font-label-sm text-label-sm font-medium flex items-center gap-1 transition-colors";
+        ocrBtn.innerHTML = `<span class="material-symbols-outlined text-[16px]">document_scanner</span><span>OCR Overlay [Off]</span>`;
+      }
+    });
+
+    // Global Academic Shortcut Listeners
+    window.addEventListener('keydown', (e) => {
+      // Ignore if user is writing in feedback textarea or mark input
+      if (['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) {
+        return;
+      }
+      const key = e.key.toUpperCase();
+      if (key === 'A') {
+        e.preventDefault();
+        acceptBtn?.click();
+      } else if (key === 'E') {
+        e.preventDefault();
+        markInput?.focus();
+        markInput?.select();
+      } else if (key === 'F') {
+        e.preventDefault();
+        document.getElementById('flagReviewBtn')?.click();
+      } else if (key === '+' || key === '=') {
+        e.preventDefault();
+        applyZoom(zoomLevel + 10);
+      } else if (key === '-' || key === '_') {
+        e.preventDefault();
+        applyZoom(zoomLevel - 10);
+      }
+    });
+  })();
+</script></main></div></body></html>

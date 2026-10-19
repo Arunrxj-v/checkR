@@ -1,0 +1,121 @@
+# ============================================================================
+# CheckR — local development stack
+#
+#   docker compose up --build
+#
+# Brings up: postgres, redis, backend (FastAPI), worker (job processor),
+#            frontend (Vite dev server).
+# ============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: checkr
+      POSTGRES_PASSWORD: checkr
+      POSTGRES_DB: checkr
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - checkr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U checkr -d checkr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Schema first, as its own one-shot step. Both long-running processes wait for
+  # it, so first boot never races `alembic upgrade head` — on an empty volume the
+  # worker used to start before the tables existed and exit with a
+  # ProgrammingError. `service_completed_successfully` is what orders this.
+  migrate:
+    build:
+      context: ./backend
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://checkr:checkr@postgres:5432/checkr
+      DATABASE_URL_SYNC: postgresql+psycopg://checkr:checkr@postgres:5432/checkr
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+    command: >
+      sh -c "python -m app.db.seed &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://checkr:checkr@postgres:5432/checkr
+      DATABASE_URL_SYNC: postgresql+psycopg://checkr:checkr@postgres:5432/checkr
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_PATH: /data/storage
+    ports:
+      - "${BACKEND_HOST_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - checkr_storage:/data/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.worker"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://checkr:checkr@postgres:5432/checkr
+      DATABASE_URL_SYNC: postgresql+psycopg://checkr:checkr@postgres:5432/checkr
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_PATH: /data/storage
+    volumes:
+      - ./backend:/app
+      - checkr_storage:/data/storage
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    environment:
+      # The dev server proxies /api to the backend container, so the SPA always
+      # talks to its own origin (no CORS, cookies and auth headers behave).
+      VITE_PROXY_TARGET: http://backend:8000
+    ports:
+      - "${FRONTEND_HOST_PORT:-5173}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  checkr_pgdata:
+  checkr_storage:

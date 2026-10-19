@@ -1,0 +1,97 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background font-sans text-on-surface antialiased;
+    overscroll-behavior: none;
+  }
+
+  /* Marks, identifiers and audit timestamps always use tabular figures. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .material-symbols-outlined {
+    font-variation-settings:
+      "FILL" 0,
+      "wght" 400,
+      "GRAD" 0,
+      "opsz" 24;
+    line-height: 1;
+    vertical-align: middle;
+    user-select: none;
+  }
+
+  /* Focus treatment is a clean 1px ring — never a soft glow. */
+  :focus-visible {
+    @apply outline-none ring-1 ring-secondary ring-offset-0;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #c4c6cf;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #9aa0ac;
+    background-clip: content-box;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-space-xs rounded font-medium transition-colors
+      disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-primary-container text-on-primary hover:bg-secondary;
+  }
+  .btn-secondary {
+    @apply btn border border-outline-variant bg-surface-container-lowest text-on-surface
+      hover:bg-surface-container-low;
+  }
+  .btn-destructive {
+    @apply btn bg-critical text-white hover:brightness-95;
+  }
+  .btn-ghost {
+    @apply btn text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface;
+  }
+
+  .field {
+    @apply w-full rounded border border-outline-variant bg-surface-container-lowest px-2.5 py-1.5
+       text-body-md text-on-surface placeholder:text-on-surface-variant/60
+      focus:border-secondary focus:outline-none focus:ring-1 focus:ring-secondary;
+  }
+
+  .label-overline {
+    @apply  text-label-sm font-semibold uppercase tracking-wider text-outline;
+  }
+
+  .panel {
+    @apply rounded-lg border border-outline-variant bg-surface-container-lowest;
+  }
+}
+
+/* Skeleton shimmer used while data loads. */
+.skeleton {
+  background: linear-gradient(90deg, #eef1fb 25%, #e1e8fd 37%, #eef1fb 63%);
+  background-size: 1000px 100%;
+  @apply animate-shimmer rounded;
+}

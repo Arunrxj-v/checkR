@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-ssr
+.vite
+.env
+.env.*
+.git
+.gitignore
+npm-debug.log*
+.DS_Store
+coverage
