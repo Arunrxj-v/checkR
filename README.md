@@ -275,12 +275,15 @@ docker compose up --build
 
 Then open **http://localhost:5173** and sign in with the demo account below.
 
-The stack starts four services:
+The stack runs these services:
 
 | Service | Host port (default) | Notes |
 | --- | --- | --- |
 | `frontend` | `5173` (`FRONTEND_HOST_PORT`) | Vite dev server; proxies `/api` to the backend |
-| `backend` | `8000` (`BACKEND_HOST_PORT`) | Runs migrations, seeds, then serves the API |
+| `backend` | `8000` (`BACKEND_HOST_PORT`) | Serves the API after schema and seed complete |
+| `worker` | — | Background processing |
+| `migrate` | — | One-shot `alembic upgrade head` |
+| `seed` | — | One-shot idempotent demo account/data seed |
 | `postgres` | `5432` (`POSTGRES_HOST_PORT`) | Primary datastore **and** job queue |
 | `redis` | `6379` (`REDIS_HOST_PORT`) | Optional wake-up signal only |
 
@@ -308,18 +311,18 @@ cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Point the app at a PostgreSQL instance. Use the values published in the
-# repository .env (the compose stack maps its Postgres to 5434, not 5432):
-export DATABASE_URL="postgresql+asyncpg://checkr:checkr@localhost:5434/checkr"
-export DATABASE_URL_SYNC="postgresql+psycopg://checkr:checkr@localhost:5434/checkr"
+# Point the app at a PostgreSQL instance. These defaults match .env.example;
+# if you changed POSTGRES_HOST_PORT in .env, use that value here too:
+export DATABASE_URL="postgresql+asyncpg://checkr:checkr@localhost:5432/checkr"
+export DATABASE_URL_SYNC="postgresql+psycopg://checkr:checkr@localhost:5432/checkr"
 
 alembic upgrade head
 python -m app.db.seed                      # create the demo account + sample data
 
-# Serve on the port the repository publishes (BACKEND_HOST_PORT in .env — 8010
-# here, because 8000 is commonly already taken). The frontend dev server reads
-# the same value, so the two stay in step.
-export BACKEND_HOST_PORT="${BACKEND_HOST_PORT:-8010}"
+# BACKEND_HOST_PORT is the single source of truth for the backend port. The
+# frontend dev server reads the same value from .env, so the two stay in step.
+# If 8000 is already taken, change it in .env (don't just change it here).
+export BACKEND_HOST_PORT="${BACKEND_HOST_PORT:-8000}"
 uvicorn app.main:app --reload --port "$BACKEND_HOST_PORT"
 ```
 
@@ -346,11 +349,19 @@ order — `VITE_PROXY_TARGET` from the environment (docker compose sets this to
 `http://127.0.0.1:8000`. Vite prints the resolved target on startup and probes it:
 
 ```
-➜  /api        proxied to http://127.0.0.1:8010
+➜  /api        proxied to http://127.0.0.1:8000
 ```
 
 `127.0.0.1` is used deliberately rather than `localhost`, which can resolve to
 IPv6 and reach an unrelated service.
+
+When a build is served **without** a reverse proxy (for example `vite preview` or
+a static host), set `VITE_API_BASE_URL` to the API origin, such as
+`http://127.0.0.1:8000` (an existing `/api` suffix is accepted). The client keeps
+that origin instead of sending `/api/...` to the page's host; also set
+`FRONTEND_ORIGIN` to the site's origin so the backend's CORS policy allows it.
+If it is unset, requests stay same-origin and `/api` must be proxied — a static
+host answers `/api/auth/login` with 404 because it has no API routes.
 
 ### If sign-in returns 404 or 500
 
@@ -367,14 +378,14 @@ Check the `➜  /api  proxied to …` line, and the startup probe warning if the
 one. To point the dev server somewhere else for one run:
 
 ```bash
-VITE_PROXY_TARGET=http://127.0.0.1:8010 npm run dev
+VITE_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
 ```
 
 To confirm the backend itself is healthy:
 
 ```bash
-curl -s http://127.0.0.1:8010/api/health
-curl -s -X POST http://127.0.0.1:8010/api/auth/login \
+curl -s http://127.0.0.1:8000/api/health
+curl -s -X POST http://127.0.0.1:8000/api/auth/login \
   -H 'content-type: application/json' \
   -d '{"email":"teacher@checkr.edu","password":"CheckR!2026"}'
 ```
@@ -400,10 +411,11 @@ exercises the page mapping: Q1 is on page 1, **Q2 continues across pages 1–2**
 Q3–Q5 are on pages 2–3.
 
 Seeding is idempotent — the demo **account** is guaranteed and the demo exam and
-sample submission are created once, then left alone. It runs automatically on
-backend startup (`SEED_ON_STARTUP`, never in production) and can be run on demand;
-this is the only supported way the demo credentials are created — there is no
-manual `INSERT` anywhere:
+sample submission are created once, then left alone. Docker Compose runs it as a
+one-shot `seed` service after `migrate`, and for non-Docker runs the backend does
+it on startup (`SEED_ON_STARTUP`, never in production). It can also be run on
+demand; this is the only supported way the demo credentials are created — there
+is no manual `INSERT` anywhere:
 
 ```bash
 docker compose exec backend python -m app.db.seed    # ensure demo account + data

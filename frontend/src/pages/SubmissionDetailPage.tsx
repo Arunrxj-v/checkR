@@ -286,7 +286,7 @@ export function SubmissionDetailPage() {
                         </div>
                       ) : (
                         <AuthImage
-                          path={submissionApi.pageImageUrl(page.id, "thumbnail").replace("/api", "")}
+                          path={submissionApi.pageImageUrl(page.id, "thumbnail")}
                           alt={`Page ${page.page_number}`}
                           className="h-full w-full object-cover"
                         />

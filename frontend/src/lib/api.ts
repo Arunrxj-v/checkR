@@ -25,8 +25,57 @@ import type {
   User,
 } from "./types";
 
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
-const PREFIX = `${API_BASE}/api`;
+type ApiQuery = Record<string, string | number | boolean | undefined | null>;
+
+/** True when the API base names a host, so the URL must keep its origin. */
+const HAS_ORIGIN = /^(?:[a-z][a-z0-9+.-]*:)?\/\//i;
+
+/**
+ * Normalise `VITE_API_BASE_URL` into the API root.
+ *
+ * Accepts `""`/`/` (same origin, relying on the proxy), an origin such as
+ * `http://127.0.0.1:8000`, or an origin that already includes `/api`. The
+ * result always ends in exactly one `/api` — `.../api` is never doubled, which
+ * would silently turn every route into a 404.
+ */
+export function normalizeApiBase(raw: string | undefined): string {
+  let base = (raw ?? "").trim().replace(/\/+$/, "");
+  if (!base) return "/api";
+  if (!base.startsWith("/") && !HAS_ORIGIN.test(base)) base = `/${base}`;
+  return base.endsWith("/api") ? base : `${base}/api`;
+}
+
+/**
+ * Build the request URL for a route path (which must not include `/api`).
+ *
+ * Same-origin bases stay relative so the dev-server/reverse proxy handles
+ * them. An absolute base keeps its origin: dropping it was the bug that made a
+ * configured `VITE_API_BASE_URL` send `/api/...` to the SPA host, which answers
+ * 404 because it serves no API.
+ */
+export function buildApiUrl(
+  apiBase: string,
+  path: string,
+  query?: ApiQuery,
+  origin = "http://localhost",
+): string {
+  const url = new URL(`${apiBase}${path}`, origin);
+  if (query) {
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== "") {
+        url.searchParams.set(key, String(value));
+      }
+    }
+  }
+  return HAS_ORIGIN.test(apiBase) ? url.toString() : url.pathname + url.search;
+}
+
+const API_BASE = normalizeApiBase(import.meta.env.VITE_API_BASE_URL as string | undefined);
+const PREFIX = API_BASE;
+
+export function apiUrl(path: string, query?: ApiQuery): string {
+  return buildApiUrl(PREFIX, path, query, window.location.origin);
+}
 
 const ACCESS_KEY = "checkr.access_token";
 const REFRESH_KEY = "checkr.refresh_token";
@@ -72,7 +121,7 @@ async function refreshSession(): Promise<boolean> {
   const refresh = tokens.refresh();
   if (!refresh) return false;
   if (!refreshInFlight) {
-    refreshInFlight = fetch(`${PREFIX}/auth/refresh`, {
+    refreshInFlight = fetch(apiUrl("/auth/refresh"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refresh }),
@@ -102,15 +151,7 @@ interface RequestOptions {
 }
 
 function buildUrl(path: string, query?: RequestOptions["query"]): string {
-  const url = new URL(`${PREFIX}${path}`, window.location.origin);
-  if (query) {
-    for (const [key, value] of Object.entries(query)) {
-      if (value !== undefined && value !== null && value !== "") {
-        url.searchParams.set(key, String(value));
-      }
-    }
-  }
-  return url.pathname + url.search;
+  return apiUrl(path, query);
 }
 
 async function parseError(res: Response): Promise<ApiError> {
@@ -267,7 +308,7 @@ export const submissionApi = {
       if (meta?.student_roll) form.append("student_roll", meta.student_roll);
 
       const xhr = new XMLHttpRequest();
-      xhr.open("POST", `${PREFIX}/exams/${examId}/submissions`);
+      xhr.open("POST", apiUrl(`/exams/${examId}/submissions`));
       const access = tokens.access();
       if (access) xhr.setRequestHeader("Authorization", `Bearer ${access}`);
       xhr.upload.onprogress = (e) => {
@@ -306,7 +347,7 @@ export const submissionApi = {
     apiRequest<Job>(`/pages/${pageId}/retry`, { method: "POST", query: { mode } }),
   jobs: (id: string) => apiRequest<Job[]>(`/submissions/${id}/jobs`),
   pageImageUrl: (pageId: string, variant: "processed" | "original" | "thumbnail" = "processed") =>
-    `${PREFIX}/pages/${pageId}/image?variant=${variant}`,
+    `/pages/${pageId}/image?variant=${variant}`,
 };
 
 // --------------------------------------------------------------------------- //
@@ -340,5 +381,5 @@ export const resultApi = {
     apiRequest<ExamResultOverview>(`/exams/${examId}/results`, { signal }),
 };
 
-/** Absolute URL for an authenticated page image (used directly in <img src>). */
+/** AuthImage path for a page scan (resolved through `apiUrl` when fetched). */
 export const pageImageUrl = submissionApi.pageImageUrl;

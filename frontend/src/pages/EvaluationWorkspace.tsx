@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Icon } from "@/components/ui/Icon";
 import { ProgressBar } from "@/components/ui/ProgressBar";
 import { Skeleton, Spinner } from "@/components/ui/Spinner";
+import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useToast } from "@/components/ui/Toaster";
 import { answerApi, examApi, resultApi, submissionApi } from "@/lib/api";
 import {
@@ -19,12 +20,20 @@ import {
   stepViewerPage,
   viewerPagePosition,
 } from "@/lib/answerNavigation";
-import { clamp, formatConfidence, formatMarks, roundTo, titleCase } from "@/lib/format";
+import {
+  clamp,
+  formatConfidence,
+  formatMarks,
+  formatTimeAgo,
+  roundTo,
+  titleCase,
+} from "@/lib/format";
 import {
   answerLabel,
   answerTone,
   confidenceLabel,
   confidenceTone,
+  decisionLabel,
 } from "@/lib/status";
 import type { Answer, AnswerDetail, Evaluation, Review } from "@/lib/types";
 
@@ -48,7 +57,6 @@ export function EvaluationWorkspace() {
   const [viewPage, setViewPage] = useState(0);
   const [awarded, setAwarded] = useState("0.0");
   const [note, setNote] = useState("");
-  const [overrideMode, setOverrideMode] = useState(false);
 
   // Viewer plumbing for question → manuscript synchronisation.
   const viewerScrollRef = useRef<HTMLDivElement | null>(null);
@@ -177,7 +185,6 @@ export function EvaluationWorkspace() {
     const basis = detail.teacher_score ?? detail.ai_score ?? 0;
     setAwarded(basis.toFixed(1));
     setNote(detail.teacher_comment ?? detail.reviews[0]?.comment ?? "");
-    setOverrideMode(detail.is_reviewed);
   }, [detail?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Synchronise the manuscript viewer with the selected question: open the
@@ -227,12 +234,7 @@ export function EvaluationWorkspace() {
       void queryClient.invalidateQueries({ queryKey: ["answer", updated.id] });
       void queryClient.invalidateQueries({ queryKey: ["submission", submissionId] });
       void queryClient.invalidateQueries({ queryKey: ["result", submissionId] });
-
-      const remaining = answers.filter((a) => !a.is_reviewed && a.id !== updated.id);
-      if (remaining.length > 0) {
-        const nextIndex = answers.findIndex((a) => a.id === remaining[0].id);
-        selectAnswer(nextIndex);
-      }
+      notify("Decision recorded", { tone: "verified" });
     },
     onError: (err) => notify("Could not record decision", { tone: "critical", detail: errorText(err) }),
   });
@@ -262,30 +264,26 @@ export function EvaluationWorkspace() {
     onError: (err) => notify("Cannot finalise yet", { tone: "review", detail: errorText(err) }),
   });
 
-  const accept = useCallback(() => {
-    if (!detail) return;
-    if (detail.ai_score === null) {
-      notify("No AI suggestion to accept", { tone: "review", detail: "Use Override to award a mark manually." });
-      setOverrideMode(true);
-      return;
-    }
-    reviewMutation.mutate({ action: "accepted", comment: note.trim() || undefined });
-  }, [detail, note, reviewMutation, notify]);
-
-  const override = useCallback(() => {
+  const recordDecision = useCallback(() => {
     if (!detail) return;
     const value = Number(awarded);
     if (!Number.isFinite(value) || value < 0 || value > detail.max_marks) {
       notify("Mark out of range", { tone: "critical", detail: `Enter a value between 0 and ${detail.max_marks}.` });
       return;
     }
+    const matchesSuggestion = detail.ai_score !== null && Math.abs(value - detail.ai_score) < 0.05;
     reviewMutation.mutate({
-      action: "overridden",
-      teacher_score: value,
+      action: matchesSuggestion ? "accepted" : "overridden",
+      teacher_score: matchesSuggestion ? undefined : value,
       comment: note.trim() || undefined,
-      reason: note.trim() || undefined,
+      reason: matchesSuggestion ? undefined : note.trim() || undefined,
     });
-  }, [detail, awarded, note, reviewMutation, notify]);
+  }, [awarded, detail, note, notify, reviewMutation]);
+
+  const useSuggestion = useCallback(() => {
+    if (detail?.ai_score == null) return;
+    setAwarded(detail.ai_score.toFixed(1));
+  }, [detail]);
 
   const flag = useCallback(() => {
     if (!detail) return;
@@ -310,10 +308,9 @@ export function EvaluationWorkspace() {
         goPrev();
       } else if (key === "a") {
         e.preventDefault();
-        accept();
+        recordDecision();
       } else if (key === "e") {
         e.preventDefault();
-        setOverrideMode(true);
         document.getElementById("awarded-mark-input")?.focus();
       } else if (key === "f") {
         e.preventDefault();
@@ -328,7 +325,7 @@ export function EvaluationWorkspace() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [accept, flag, goNext, goPrev]);
+  }, [flag, goNext, goPrev, recordDecision]);
 
   const reviewedCount = answers.filter((a) => a.is_reviewed).length;
   const roster = useMemo(
@@ -344,10 +341,10 @@ export function EvaluationWorkspace() {
 
   if (submissionQuery.isLoading || answersQuery.isLoading) {
     return (
-      <div className="flex h-[calc(100vh-3.5rem)] items-center justify-center bg-surface">
-        <div className="flex flex-col items-center gap-space-sm text-on-surface-variant">
+      <div className="flex h-[calc(100dvh-3.5rem)] items-center justify-center bg-desk">
+        <div className="flex flex-col items-center gap-space-sm text-desk-muted">
           <Spinner className="h-5 w-5" />
-          <span className=" text-body-sm">Preparing workspace…</span>
+          <span className="text-body-sm">Preparing workspace…</span>
         </div>
       </div>
     );
@@ -394,153 +391,242 @@ export function EvaluationWorkspace() {
     if (index >= 0) setViewPage(index);
   };
 
+  const awardedValue = Number(awarded);
+  const markIsValid =
+    Number.isFinite(awardedValue) && awardedValue >= 0 && awardedValue <= (detail?.max_marks ?? 0);
+  const matchesSuggestion =
+    detail?.ai_score != null && Number.isFinite(awardedValue)
+      ? Math.abs(awardedValue - detail.ai_score) < 0.05
+      : false;
+  const markDelta = detail?.ai_score != null ? awardedValue - detail.ai_score : null;
+
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] w-full select-none flex-col overflow-hidden bg-surface">
-      {/* Top operations bar */}
-      <header className="z-30 flex h-14 shrink-0 items-center justify-between gap-space-md bg-surface-container-lowest px-gutter shadow-sm">
-        <div className="flex min-w-0 items-center gap-space-sm">
-          <nav className="flex items-center gap-1.5  text-body-sm text-on-surface-variant">
-            <Link to="/evaluation" className="hover:text-on-surface">
-              Evaluation
-            </Link>
-            <span className="text-outline">/</span>
-            <Link to={`/exams/${submission.exam_id}`} className="font-medium text-on-surface hover:text-secondary">
-              {examQuery.data?.title ?? "Examination"}
-            </Link>
-            <span className="text-outline">/</span>
-          </nav>
-          <div className="flex items-center gap-space-xs rounded bg-surface-container px-2 py-0.5 shadow-sm">
-            <Icon name="person" className="text-[16px] text-secondary" />
-            <span className="font-display text-label-md font-semibold text-primary">
+    <>
+      <div className="on-desk flex h-[calc(100dvh-3.5rem)] flex-col overflow-y-auto bg-desk px-4 py-8 text-desk-text md:hidden">
+        <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
+          <div>
+            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-desk-muted">
+              Marking workspace
+            </div>
+            <h1 className="mt-3 font-reading text-[32px] font-medium leading-[1.12] tracking-tight">
+              This desk needs a wider screen.
+            </h1>
+            <p className="mt-3 text-body-md leading-6 text-desk-muted">
+              Reviewing handwriting against a marking scheme needs the manuscript and decision dock side by
+              side. Open this script on a tablet or desktop to mark it. You can still inspect the submission
+              record here.
+            </p>
+          </div>
+
+          <div className="border-y border-desk-line py-4">
+            <div className="font-mono text-[10px] uppercase tracking-[0.12em] text-desk-muted">
+              Candidate
+            </div>
+            <div className="mt-1 text-headline-sm font-semibold text-desk-text">
               {submission.student_name ?? "Unnamed candidate"}
-            </span>
-            <span className="rounded bg-surface-container-lowest px-1 font-mono text-label-sm font-medium text-on-surface-variant">
-              {submission.student_roll ?? "no roll"}
-            </span>
-            <span className="px-1  text-label-sm text-outline">
-              Sheet {siblingIndex >= 0 ? siblingIndex + 1 : 1}/{siblingList.length || 1}
-            </span>
-          </div>
-          <div className="ml-space-xs flex items-center gap-1">
-            <button
-              type="button"
-              title="Previous candidate"
-              disabled={siblingIndex <= 0}
-              onClick={() => navigate(`/submissions/${siblingList[siblingIndex - 1].id}/evaluate`)}
-              className="flex h-7 items-center gap-0.5 rounded bg-surface-container-low px-2  text-label-sm text-on-surface shadow-sm transition-colors hover:bg-surface-container-high disabled:opacity-40"
-            >
-              <Icon name="chevron_left" className="text-[14px]" /> Prev
-            </button>
-            <button
-              type="button"
-              title="Next candidate"
-              disabled={siblingIndex < 0 || siblingIndex >= siblingList.length - 1}
-              onClick={() => navigate(`/submissions/${siblingList[siblingIndex + 1].id}/evaluate`)}
-              className="flex h-7 items-center gap-0.5 rounded bg-surface-container-low px-2  text-label-sm text-on-surface shadow-sm transition-colors hover:bg-surface-container-high disabled:opacity-40"
-            >
-              Next <Icon name="chevron_right" className="text-[14px]" />
-            </button>
-          </div>
-        </div>
-
-        <div className="hidden items-center gap-3 rounded bg-surface-container-low px-3 py-1 xl:flex">
-          {[
-            ["N", "Next Q"],
-            ["P", "Prev Q"],
-            ["A", "Accept"],
-            ["E", "Edit"],
-            ["F", "Flag"],
-          ].map(([key, label]) => (
-            <div key={key} className="flex items-center gap-1 whitespace-nowrap text-label-sm text-on-surface-variant">
-              <kbd className="rounded bg-surface-container-lowest px-1 py-0.5 font-mono text-[10px] text-on-surface shadow-sm">{key}</kbd>
-              <span>{label}</span>
             </div>
-          ))}
-        </div>
-
-        <div className="flex shrink-0 items-center gap-space-md">
-          <div className="flex items-center gap-2 rounded bg-surface-container-high px-2.5 py-1">
-            <span className=" text-label-sm font-medium uppercase tracking-wide text-on-surface-variant">
-              Running Total
-            </span>
-            <div className="flex items-baseline gap-1">
-              <span className="font-mono text-headline-sm font-semibold tnum text-primary">{runningTotal.toFixed(1)}</span>
-              <span className="font-mono text-label-sm text-outline">/ {maxTotal.toFixed(1)}</span>
+            <div className="mt-1 font-mono text-label-sm text-desk-muted">
+              {submission.student_roll ?? "No roll"} · Sheet{" "}
+              {siblingIndex >= 0 ? siblingIndex + 1 : 1}/{siblingList.length || 1}
             </div>
-            <span className="rounded px-1 py-0.2  text-[10px] font-medium bg-review-bg text-review-fg">
-              Tentative
-            </span>
+            <div className="mt-3 text-body-sm text-desk-muted">
+              {examQuery.data?.title ?? "Examination"}
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => finalizeMutation.mutate()}
-            disabled={finalizeMutation.isPending || reviewedCount < answers.length}
-            className="btn-primary flex h-8 items-center gap-1.5 px-3.5  text-body-sm font-semibold"
-            title={reviewedCount < answers.length ? "Every answer needs a teacher decision first" : "Finalise this sheet"}
-          >
-            {finalizeMutation.isPending ? <Spinner className="h-3.5 w-3.5 border-white/40 border-t-white" /> : <Icon name="task_alt" className="text-[16px]" />}
-            Finalise Sheet
-          </button>
-        </div>
-      </header>
 
-      <div className="relative flex flex-1 overflow-hidden">
-        {/* Panel 1 — question roster */}
-        <aside className="z-10 flex w-64 shrink-0 flex-col overflow-hidden bg-surface-container-lowest shadow-sm">
-          <div className="flex flex-col gap-1.5 bg-surface-container-low p-space-sm">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Icon name="list_alt" className="text-[16px] text-primary" />
-                <span className="font-display text-label-md font-semibold uppercase tracking-wider text-primary">
-                  Question Roster
-                </span>
-              </div>
-              <span className="rounded bg-surface-container px-1.5 py-0.5 font-mono text-label-sm font-semibold text-on-surface-variant">
-                {answers.length} Total
+          <div className="flex flex-col gap-2">
+            <Link
+              to={`/submissions/${submissionId}`}
+              className="inline-flex min-h-[2.75rem] items-center justify-center rounded bg-primary-fixed px-4 text-body-sm font-semibold text-on-primary-fixed"
+            >
+              Open submission record
+            </Link>
+            <Link
+              to="/evaluation"
+              className="inline-flex min-h-[2.75rem] items-center justify-center rounded border border-desk-line px-4 text-body-sm text-desk-text"
+            >
+              Back to evaluation queue
+            </Link>
+          </div>
+        </div>
+      </div>
+
+      <div className="on-desk hidden h-[calc(100dvh-3.5rem)] min-h-0 w-full flex-col overflow-hidden bg-desk md:flex">
+        <header className="z-30 flex min-h-[3.5rem] shrink-0 flex-wrap items-center justify-between gap-space-sm border-b border-desk-line bg-desk px-gutter py-2">
+          <div className="flex min-w-0 items-center gap-space-sm">
+            <nav className="hidden items-center gap-1.5 text-body-sm text-desk-muted xl:flex">
+              <Link to="/evaluation" className="rounded transition-colors hover:text-desk-text">
+                Evaluation
+              </Link>
+              <span className="text-desk-line">/</span>
+              <Link
+                to={`/exams/${submission.exam_id}`}
+                className="max-w-[12rem] truncate font-medium text-desk-text transition-colors hover:text-primary-fixed-dim"
+              >
+                {examQuery.data?.title ?? "Examination"}
+              </Link>
+              <span className="text-desk-line">/</span>
+            </nav>
+            <div className="flex min-w-0 items-center gap-2 rounded border border-desk-line bg-desk-raised px-2 py-1">
+              <Icon name="person" className="shrink-0 text-[16px] text-desk-muted" />
+              <span className="max-w-[11rem] truncate text-label-md font-medium text-desk-text">
+                {submission.student_name ?? "Unnamed candidate"}
+              </span>
+              <span className="shrink-0 border-l border-desk-line pl-2 font-mono text-[10px] text-desk-muted">
+                {submission.student_roll ?? "no roll"}
+              </span>
+              <span className="hidden shrink-0 font-mono text-[10px] text-desk-muted sm:inline">
+                Sheet {siblingIndex >= 0 ? siblingIndex + 1 : 1}/{siblingList.length || 1}
               </span>
             </div>
-            <label className="flex cursor-pointer items-center gap-2 pt-1  text-label-sm text-on-surface-variant">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                title="Previous candidate"
+                disabled={siblingIndex <= 0}
+                onClick={() => navigate(`/submissions/${siblingList[siblingIndex - 1].id}/evaluate`)}
+                className="flex h-8 items-center gap-0.5 rounded border border-desk-line px-2 text-label-sm text-desk-text transition-colors hover:bg-desk-raised disabled:opacity-35 lg:px-2.5"
+              >
+                <Icon name="chevron_left" className="text-[14px]" />
+                <span className="hidden lg:inline">Prev</span>
+              </button>
+              <button
+                type="button"
+                title="Next candidate"
+                disabled={siblingIndex < 0 || siblingIndex >= siblingList.length - 1}
+                onClick={() => navigate(`/submissions/${siblingList[siblingIndex + 1].id}/evaluate`)}
+                className="flex h-8 items-center gap-0.5 rounded border border-desk-line px-2 text-label-sm text-desk-text transition-colors hover:bg-desk-raised disabled:opacity-35 lg:px-2.5"
+              >
+                <span className="hidden lg:inline">Next</span>
+                <Icon name="chevron_right" className="text-[14px]" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-space-sm">
+            <label className="flex items-center gap-1.5 2xl:hidden">
+              <span className="sr-only">Question</span>
+              <Icon name="list_alt" className="text-[16px] text-desk-muted" />
+              <select
+                value={activeIndex}
+                onChange={(e) => selectAnswer(Number(e.target.value))}
+                className="h-8 max-w-[190px] rounded border border-desk-line bg-desk-raised px-2 font-mono text-[11px] text-desk-text"
+              >
+                {answers.map((answer, index) => (
+                  <option key={answer.id} value={index}>
+                    Q{index + 1} · {answerLabel(answer.status)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div
+              className="hidden items-center gap-1.5 border-l border-desk-line pl-3 md:flex"
+              title={`${reviewedCount} of ${answers.length} answers have a teacher decision.`}
+            >
+              <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-desk-muted">
+                Reviewed
+              </span>
+              <span className="font-mono text-label-sm font-semibold tnum text-desk-text">
+                {reviewedCount}/{answers.length}
+              </span>
+            </div>
+            <div
+              className="hidden items-center gap-2 border-l border-desk-line pl-3 xl:flex"
+              title="Includes AI suggestions for answers that have not been reviewed yet."
+            >
+              <span className="font-mono text-[9px] uppercase tracking-[0.12em] text-desk-muted">
+                Provisional
+              </span>
+              <span className="font-mono text-headline-sm font-semibold tnum text-desk-text">
+                {runningTotal.toFixed(1)}
+              </span>
+              <span className="font-mono text-label-sm text-desk-muted">/ {maxTotal.toFixed(1)}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => finalizeMutation.mutate()}
+              disabled={finalizeMutation.isPending || reviewedCount < answers.length}
+              className="flex min-h-[2rem] items-center gap-1.5 rounded bg-primary-fixed px-3 text-body-sm font-semibold text-on-primary-fixed transition-colors hover:bg-primary-fixed-dim disabled:cursor-not-allowed disabled:opacity-45"
+              title={
+                reviewedCount < answers.length
+                  ? `${answers.length - reviewedCount} answers still need a teacher decision`
+                  : "Finalise this sheet"
+              }
+            >
+              {finalizeMutation.isPending ? (
+                <Spinner className="h-3.5 w-3.5" />
+              ) : (
+                <Icon name="task_alt" className="text-[16px]" />
+              )}
+              Finalise
+            </button>
+          </div>
+        </header>
+
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Panel 1 — question roster */}
+        <aside className="z-10 hidden w-60 shrink-0 flex-col overflow-hidden border-r border-desk-line bg-desk 2xl:flex">
+          <div className="flex flex-col gap-2 border-b border-desk-line p-space-sm">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <Icon name="list_alt" className="text-[16px] text-desk-muted" />
+                <span className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-desk-text">
+                  Question roster
+                </span>
+              </div>
+              <span className="rounded border border-desk-line px-1.5 py-0.5 font-mono text-[10px] text-desk-muted">
+                {answers.length}
+              </span>
+            </div>
+            <label className="flex min-h-[1.75rem] cursor-pointer items-center gap-2 text-label-sm text-desk-muted">
               <input
                 type="checkbox"
-                className="h-3.5 w-3.5 accent-primary"
+                className="h-3.5 w-3.5 accent-primary-fixed-dim"
                 checked={reviewOnly}
                 onChange={(e) => setReviewOnly(e.target.checked)}
               />
               Review needed only
             </label>
           </div>
-          <div className="flex flex-1 flex-col gap-1 overflow-y-auto p-1.5">
+          <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto p-1.5">
             {roster.map((answer) => {
               const index = answers.findIndex((a) => a.id === answer.id);
               const isActive = answer.id === activeAnswer?.id;
               const tone = answerTone(answer.status, answer.is_flagged);
+              const toneClass =
+                tone === "review"
+                  ? "text-review-border"
+                  : tone === "critical"
+                    ? "text-critical-border"
+                    : tone === "verified"
+                      ? "text-verified-border"
+                      : tone === "info"
+                        ? "text-primary-fixed-dim"
+                        : "text-desk-muted";
               return (
                 <button
                   key={answer.id}
                   type="button"
                   onClick={() => selectAnswer(index)}
-                  className={`flex items-center justify-between rounded px-3 py-2.5 text-left transition-colors ${
-                    isActive
-                      ? "border-l-2 border-secondary bg-surface-container-low"
-                      : "hover:bg-surface-container-low"
+                  className={`flex min-h-[3rem] items-center justify-between gap-2 rounded px-2.5 py-2 text-left transition-colors ${
+                    isActive ? "bg-desk-high" : "hover:bg-desk-raised"
                   }`}
                 >
-                  <div className="flex min-w-0 flex-col pr-2">
-                    <div className="flex items-center gap-1.5">
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                        tone === "verified" ? "bg-verified" : tone === "review" ? "bg-review" : tone === "critical" ? "bg-critical" : tone === "info" ? "bg-secondary" : "bg-outline"
-                      }`} />
-                      <span className={`truncate  text-body-sm ${isActive ? "font-semibold text-primary" : "font-medium text-on-surface"}`}>
-                        Q{index + 1} {shortTitle(answer)}
+                  <div className="flex min-w-0 flex-col">
+                    <span
+                      className={`truncate text-body-sm ${
+                        isActive ? "font-semibold text-desk-text" : "font-medium text-desk-text/90"
+                      }`}
+                    >
+                      Q{index + 1} {shortTitle(answer)}
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1 font-mono text-[10px]">
+                      <span className={`uppercase tracking-[0.06em] ${toneClass}`}>
+                        {answerLabel(answer.status)}
                       </span>
-                    </div>
-                    <span className={`flex items-center gap-1 pl-3  text-[11px] ${
-                      tone === "review" ? "font-medium text-review-fg" : tone === "critical" ? "text-critical-fg" : "text-outline"
-                    }`}>
-                      <span>{answerLabel(answer.status)}</span>
                       {answer.page_numbers.length > 0 ? (
                         <span
-                          className="text-outline"
+                          className="text-desk-muted"
                           title={
                             answer.page_mapping_uncertain
                               ? "Detected on this page, but the location could not be confirmed."
@@ -551,96 +637,102 @@ export function EvaluationWorkspace() {
                           {answer.page_mapping_uncertain ? "?" : ""}
                         </span>
                       ) : (
-                        <span className="text-outline" title="Page mapping uncertain — navigate manually.">
+                        <span className="text-desk-muted" title="Page mapping uncertain — navigate manually.">
                           · p.?
                         </span>
                       )}
                     </span>
                   </div>
-                  <span className={`shrink-0 font-mono tnum text-body-sm ${isActive ? "font-semibold text-primary" : "font-medium text-on-surface"}`}>
+                  <span className="shrink-0 font-mono text-body-sm font-medium tnum text-desk-text">
                     {answer.final_score ?? answer.ai_score ?? "—"} / {answer.max_marks}
                   </span>
                 </button>
               );
             })}
           </div>
-          <div className="flex flex-col gap-1 bg-surface-container-low p-space-sm">
-            <div className="flex items-center justify-between  text-label-sm text-on-surface-variant">
+          <div className="flex flex-col gap-1.5 border-t border-desk-line p-space-sm">
+            <div className="flex items-center justify-between text-label-sm text-desk-muted">
               <span>
-                Evaluated: {reviewedCount} / {answers.length}
+                Reviewed {reviewedCount} / {answers.length}
               </span>
-              <span className="font-semibold text-primary">
-                {answers.length ? Math.round((reviewedCount / answers.length) * 100) : 0}% Complete
+              <span className="font-mono text-[10px] text-desk-text">
+                {answers.length ? Math.round((reviewedCount / answers.length) * 100) : 0}%
               </span>
             </div>
-            <ProgressBar value={answers.length ? (reviewedCount / answers.length) * 100 : 0} tone="info" height="h-1.5" />
-            <div className="flex items-center justify-between pt-1 text-[10px] text-outline">
-              <span>Changes saved on decision</span>
-              <Icon name="cloud_done" className="text-[14px] text-verified" />
+            <ProgressBar
+              value={answers.length ? (reviewedCount / answers.length) * 100 : 0}
+              tone="info"
+              height="h-1.5"
+            />
+            <div className="flex items-center justify-between pt-1 font-mono text-[10px] text-desk-muted">
+              <span>Saved on each decision</span>
+              <Icon name="cloud_done" className="text-[14px] text-verified-border" />
             </div>
           </div>
         </aside>
 
         {/* Panel 2 — document viewer */}
-        <main className="relative flex flex-1 flex-col overflow-hidden bg-surface">
-          <div className="z-10 flex h-11 shrink-0 items-center justify-between gap-space-md bg-surface-container-lowest px-gutter shadow-sm">
-            <div className="flex shrink-0 items-center gap-1 text-on-surface-variant">
+        <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-desk">
+          <div className="z-10 flex min-h-[2.75rem] shrink-0 flex-wrap items-center justify-between gap-2 border-b border-desk-line bg-desk-raised px-gutter py-1.5">
+            <div className="flex shrink-0 items-center gap-1 text-desk-muted">
               <button
                 type="button"
                 title="Zoom out"
-                className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-container hover:text-on-surface"
+                className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-desk-high hover:text-desk-text"
                 onClick={() => setZoom((z) => Math.max(ZOOM_MIN, z - ZOOM_STEP))}
               >
                 <Icon name="remove" className="text-[16px]" />
               </button>
-              <span className="px-2 font-mono text-label-sm font-medium text-on-surface">{zoom}%</span>
+              <span className="px-1 font-mono text-label-sm font-medium text-desk-text">{zoom}%</span>
               <button
                 type="button"
                 title="Zoom in"
-                className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-container hover:text-on-surface"
+                className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-desk-high hover:text-desk-text"
                 onClick={() => setZoom((z) => Math.min(ZOOM_MAX, z + ZOOM_STEP))}
               >
                 <Icon name="add" className="text-[16px]" />
               </button>
-              <div className="mx-1.5 h-3.5 w-px bg-outline-variant" />
+              <div className="mx-1.5 h-3.5 w-px bg-desk-line" />
               <button
                 type="button"
-                title="Fit to page"
-                className="flex h-7 items-center gap-1 rounded px-2.5  text-label-sm text-on-surface transition-colors hover:bg-surface-container"
+                title="Reset zoom to 100%"
+                className="flex h-8 items-center gap-1 rounded px-2 text-label-sm text-desk-text transition-colors hover:bg-desk-high"
                 onClick={() => setZoom(100)}
               >
-                <Icon name="crop_free" className="text-[15px]" /> Fit
+                <Icon name="crop_free" className="text-[15px]" /> Reset
               </button>
               <button
                 type="button"
                 title="Rotate manuscript"
-                className="flex h-7 w-7 items-center justify-center rounded text-on-surface transition-colors hover:bg-surface-container"
+                className="flex h-8 w-8 items-center justify-center rounded text-desk-text transition-colors hover:bg-desk-high"
                 onClick={() => setRotation((r) => (r + 90) % 360)}
               >
                 <Icon name="rotate_right" className="text-[16px]" />
               </button>
               <button
                 type="button"
+                aria-pressed={showOcr}
                 onClick={() => setShowOcr((v) => !v)}
-                className={`flex h-7 items-center gap-1 whitespace-nowrap rounded px-2  text-label-sm font-medium transition-colors ${
-                  showOcr ? "bg-secondary-fixed text-on-secondary-fixed-variant" : "text-on-surface-variant hover:bg-surface-container"
+                className={`flex h-8 items-center gap-1 whitespace-nowrap rounded px-2 text-label-sm font-medium transition-colors ${
+                  showOcr
+                    ? "bg-primary-fixed text-on-primary-fixed"
+                    : "text-desk-muted hover:bg-desk-high hover:text-desk-text"
                 }`}
               >
-                <Icon name="document_scanner" className="text-[16px]" /> OCR Overlay [{showOcr ? "On" : "Off"}]
+                <Icon name="document_scanner" className="text-[16px]" /> OCR {showOcr ? "on" : "off"}
               </button>
             </div>
 
-            <div className="flex min-w-0 items-center gap-2  text-label-sm text-outline">
+            <div className="flex min-w-0 items-center gap-2 text-label-sm text-desk-muted">
               <span className="truncate">
-                {examQuery.data?.title ?? "Manuscript"} • Page {currentPage ? currentPage.page_number : 0} of{" "}
-                {submissionPages.length}
+                Page {currentPage ? currentPage.page_number : 0} of {submissionPages.length}
               </span>
               {pageChip ? (
                 <span
-                  className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 font-mono text-label-sm ${
+                  className={`shrink-0 whitespace-nowrap rounded border px-1.5 py-0.5 font-mono text-[10px] ${
                     mappingUncertain
-                      ? "bg-review-bg text-review-fg"
-                      : "bg-surface-container text-on-surface-variant"
+                      ? "border-review-border/60 bg-desk-high text-review-border"
+                      : "border-desk-line text-desk-muted"
                   }`}
                   title={
                     mappingUncertain
@@ -659,14 +751,14 @@ export function EvaluationWorkspace() {
                 title={
                   answerPageList.length > 1 ? "Previous page of this answer" : "Previous manuscript page"
                 }
-                className="flex h-7 items-center gap-1 whitespace-nowrap rounded px-2  text-label-sm text-on-surface transition-colors hover:bg-surface-container disabled:opacity-40"
+                className="flex h-8 items-center gap-1 whitespace-nowrap rounded px-2 text-label-sm text-desk-text transition-colors hover:bg-desk-high disabled:opacity-35"
                 disabled={!pagePosition?.canPrev}
                 onClick={() => goPage(-1)}
               >
-                <Icon name="arrow_back" className="text-[14px]" /> Prev
+                <Icon name="arrow_back" className="text-[14px]" /> <span className="hidden lg:inline">Prev</span>
               </button>
               <span
-                className="px-1.5 font-mono text-label-sm font-semibold text-on-surface"
+                className="px-1.5 font-mono text-label-sm font-semibold text-desk-text"
                 title={answerPageList.length > 1 ? "Current answer page" : "Current manuscript page"}
               >
                 {pagePosition ? pagePosition.index + 1 : viewPage + 1} /{" "}
@@ -675,30 +767,34 @@ export function EvaluationWorkspace() {
               <button
                 type="button"
                 title={answerPageList.length > 1 ? "Next page of this answer" : "Next manuscript page"}
-                className="flex h-7 items-center gap-1 whitespace-nowrap rounded px-2  text-label-sm text-on-surface transition-colors hover:bg-surface-container disabled:opacity-40"
+                className="flex h-8 items-center gap-1 whitespace-nowrap rounded px-2 text-label-sm text-desk-text transition-colors hover:bg-desk-high disabled:opacity-35"
                 disabled={!pagePosition?.canNext}
                 onClick={() => goPage(1)}
               >
-                Next <Icon name="arrow_forward" className="text-[14px]" />
+                <span className="hidden lg:inline">Next</span>{" "}
+                <Icon name="arrow_forward" className="text-[14px]" />
               </button>
             </div>
           </div>
 
           <div
             ref={viewerScrollRef}
-            className="flex flex-1 items-start justify-center overflow-auto bg-surface-container-low p-space-md"
+            className="flex flex-1 items-start justify-center overflow-auto bg-desk p-space-md"
           >
             {currentPage ? (
-              <div className="flex flex-col gap-space-md" style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}>
+              <div
+                className="flex w-full min-w-0 max-w-[820px] flex-col gap-space-md"
+                style={{ transform: `scale(${zoom / 100})`, transformOrigin: "top center" }}
+              >
                 <div
                   ref={pageImageWrapRef}
-                  className="relative w-[780px] transition-transform"
+                  className="relative w-full transition-transform"
                   style={{ transform: `rotate(${rotation}deg)` }}
                 >
                   <AuthImage
                     path={`/pages/${currentPage.id}/image?variant=processed`}
                     alt={`Page ${currentPage.page_number}`}
-                    className="w-full rounded bg-white shadow-paper"
+                    className="w-full rounded-sm border border-outline-variant bg-surface-container-lowest shadow-paper"
                     onLoad={() => focusRegion(regionBoundsForPage)}
                   />
                   {showOcr && activeAnswerPage
@@ -717,17 +813,19 @@ export function EvaluationWorkspace() {
                     : null}
                 </div>
                 {showOcr && detail?.transcription ? (
-                  <div className="w-[780px] rounded border border-outline-variant bg-[#fffdf5] p-6 shadow-paper">
-                    <div className="mb-space-sm flex items-center justify-between border-b border-outline-variant pb-2">
-                      <span className=" text-label-sm font-semibold uppercase tracking-wider text-outline">
-                        OCR Transcript — {detail.question_label ?? `Q${activeIndex + 1}`} · Page{" "}
+                  <div className="w-full rounded-sm border border-outline-variant bg-surface-container-lowest p-5 shadow-paper sm:p-6">
+                    <div className="mb-space-sm flex flex-wrap items-center justify-between gap-2 border-b border-outline-variant pb-2">
+                      <span className="font-mono text-[10px] font-medium uppercase tracking-[0.1em] text-outline">
+                        Transcript — {detail.question_label ?? `Q${activeIndex + 1}`} · Page{" "}
                         {currentPage.page_number}
                       </span>
-                      <span className="font-mono text-label-sm text-outline">
-                        {detail.ocr_confidence !== null ? `${formatConfidence(detail.ocr_confidence)} confidence` : ""}
+                      <span className="font-mono text-[10px] text-outline">
+                        {detail.ocr_confidence !== null
+                          ? `${formatConfidence(detail.ocr_confidence)} confidence`
+                          : ""}
                       </span>
                     </div>
-                    <pre className="whitespace-pre-wrap font-mono text-[13px] leading-6 text-[#1e293b]">
+                    <pre className="whitespace-pre-wrap font-reading text-reading-md text-on-surface">
                       {detail.transcription}
                     </pre>
                     {detail.is_handwriting_uncertain ? (
@@ -740,249 +838,308 @@ export function EvaluationWorkspace() {
                 ) : null}
               </div>
             ) : (
-              <div className="flex h-full items-center justify-center text-on-surface-variant">
-                <span className=" text-body-sm">No page image available yet.</span>
+              <div className="flex h-full items-center justify-center text-desk-muted">
+                <span className="text-body-sm">No page image available yet.</span>
               </div>
             )}
           </div>
         </main>
 
         {/* Panel 3 — scoring deck */}
-        <aside className="z-20 flex w-[390px] shrink-0 flex-col overflow-hidden bg-surface-container-lowest shadow-sm">
-          <div className="flex shrink-0 items-center justify-between border-b border-outline-variant px-4 py-3">
+        <aside className="z-20 hidden w-[360px] shrink-0 flex-col overflow-hidden border-l border-desk-line bg-surface-container-lowest md:flex xl:w-[390px]">
+          <div className="flex shrink-0 items-start justify-between gap-3 border-b border-outline-variant px-4 py-3">
             <div className="min-w-0">
-              <h2 className="truncate font-display text-headline-sm font-semibold leading-tight text-primary">
-                {detail ? `Question ${activeIndex + 1}: ${shortTitle(detail)}` : `Question ${activeIndex + 1}`}
+              <div className="label-overline">Question {activeIndex + 1}</div>
+              <h2 className="mt-1 truncate font-reading text-[23px] font-medium leading-tight text-primary">
+                {detail?.question_label ?? `Question ${activeIndex + 1}`}
               </h2>
-              <div className="mt-0.5  text-label-sm text-outline">
-                {detail?.question_type ? titleCase(detail.question_type) : "—"}
-                {activeAnswer ? ` · ${answerLabel(activeAnswer.status)}` : ""}
+              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-label-sm text-on-surface-variant">
+                <span>{detail?.question_type ? titleCase(detail.question_type) : "—"}</span>
+                {activeAnswer ? (
+                  <StatusBadge
+                    tone={answerTone(activeAnswer.status, activeAnswer.is_flagged)}
+                    label={answerLabel(activeAnswer.status)}
+                    dot
+                  />
+                ) : null}
               </div>
             </div>
-            <span className="shrink-0 rounded border border-outline-variant bg-surface-container-low px-2 py-0.5 font-mono text-label-md font-semibold text-primary">
-              Max: {(detail?.max_marks ?? activeAnswer?.max_marks ?? 0).toFixed(1)}
+            <span className="shrink-0 rounded border border-outline-variant px-2 py-1 font-mono text-[10px] text-on-surface-variant">
+              Max{" "}
+              <strong className="font-medium text-primary">
+                {(detail?.max_marks ?? activeAnswer?.max_marks ?? 0).toFixed(1)}
+              </strong>
             </span>
           </div>
 
-          <div className="flex-1 space-y-4 overflow-y-auto px-4 py-3">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4">
             {detailQuery.isLoading || !detail ? (
-              <div className="flex flex-col gap-space-sm">
+              <div className="flex flex-col gap-space-sm py-4">
                 <Skeleton className="h-16 w-full" />
                 <Skeleton className="h-24 w-full" />
                 <Skeleton className="h-32 w-full" />
               </div>
             ) : (
               <>
-                {/* Question prompt */}
                 {detail.question_text ? (
-                  <div className="space-y-1 pb-3 border-b border-outline-variant">
+                  <section className="space-y-1 border-b border-outline-variant py-3">
                     <div className="label-overline">Question</div>
-                    <p className=" text-body-sm leading-relaxed text-on-surface-variant">{detail.question_text}</p>
-                  </div>
+                    <p className="font-reading text-reading-md leading-snug text-on-surface">
+                      {detail.question_text}
+                    </p>
+                  </section>
                 ) : null}
 
-                {/* Marking scheme */}
-                <div className="space-y-1.5 border-b border-outline-variant pb-3">
-                  <div className="label-overline">Marking Scheme</div>
+                <section className="space-y-2 border-b border-outline-variant py-3">
+                  <div className="label-overline">Marking scheme</div>
                   {detail.marking_scheme.length > 0 ? (
-                    <ul className="space-y-1  text-body-sm text-on-surface-variant">
-                      {detail.marking_scheme.map((entry) => (
-                        <li key={entry.id} className="flex items-center justify-between">
-                          <span>• {entry.name}</span>
-                          <span className="font-mono font-medium text-on-surface">{entry.max_marks.toFixed(1)}</span>
+                    <ul className="text-body-sm text-on-surface-variant">
+                      {detail.marking_scheme.map((entry, index) => (
+                        <li
+                          key={entry.id}
+                          className="flex items-baseline justify-between gap-2 border-b border-outline-variant/60 py-1.5 last:border-0"
+                        >
+                          <span className="flex min-w-0 items-baseline gap-2">
+                            <span className="font-mono text-[10px] text-outline">
+                              {String(index + 1).padStart(2, "0")}
+                            </span>
+                            <span>{entry.name}</span>
+                          </span>
+                          <span className="shrink-0 font-mono font-medium text-on-surface">
+                            {entry.max_marks.toFixed(1)}
+                          </span>
                         </li>
                       ))}
                     </ul>
                   ) : (
-                    <p className=" text-body-sm text-on-surface-variant">
+                    <p className="text-body-sm text-on-surface-variant">
                       No criteria defined — scored holistically.
                     </p>
                   )}
-                </div>
+                </section>
 
-                {/* Suggested mark */}
-                <div className="flex items-center justify-between rounded border border-outline-variant bg-surface-container-low p-2.5">
+                <section className="flex items-end justify-between gap-3 border-b border-outline-variant py-3">
                   <div className="flex flex-col">
-                    <span className=" text-label-sm text-outline">Suggested Mark</span>
+                    <span className="label-overline">AI suggestion</span>
                     <span
-                      className={` text-[11px] font-medium ${
-                        confidenceTone(detail.evaluation?.confidence_level, detail.evaluation?.confidence) === "verified"
+                      className={`mt-1 text-[11px] font-medium ${
+                        confidenceTone(
+                          detail.evaluation?.confidence_level,
+                          detail.evaluation?.confidence,
+                        ) === "verified"
                           ? "text-verified-fg"
-                          : confidenceTone(detail.evaluation?.confidence_level, detail.evaluation?.confidence) === "review"
+                          : confidenceTone(
+                                detail.evaluation?.confidence_level,
+                                detail.evaluation?.confidence,
+                              ) === "review"
                             ? "text-review-fg"
                             : "text-critical-fg"
                       }`}
                     >
-                      {detail.evaluation ? confidenceLabel(detail.evaluation.confidence_level) : "No AI suggestion"}
+                      {detail.evaluation
+                        ? confidenceLabel(detail.evaluation.confidence_level)
+                        : "No AI suggestion"}
                     </span>
                   </div>
-                  <div className="font-mono text-headline-lg font-bold tnum text-primary">
+                  <div className="font-mono text-[30px] font-medium leading-none tnum text-primary">
                     {detail.ai_score !== null ? detail.ai_score.toFixed(1) : "—"}
-                    <span className=" font-normal text-outline"> / {detail.max_marks.toFixed(0)}</span>
+                    <span className="font-normal text-outline"> / {detail.max_marks.toFixed(0)}</span>
                   </div>
-                </div>
+                </section>
 
-                {/* AI assessment */}
                 {detail.evaluation ? (
                   <AiAssessment evaluation={detail.evaluation} />
                 ) : (
-                  <div className="space-y-2 border-b border-outline-variant pb-3">
-                    <div className="label-overline">AI Assessment</div>
-                    <p className=" text-body-sm text-on-surface-variant">
-                      This answer has not been evaluated by the AI yet. You can award a mark directly, or queue a
-                      re-evaluation.
+                  <section className="space-y-2 border-b border-outline-variant py-3">
+                    <div className="label-overline">AI assessment</div>
+                    <p className="text-body-sm text-on-surface-variant">
+                      This answer has not been evaluated by the AI yet. You can award a mark directly, or
+                      queue a re-evaluation.
                     </p>
                     <button
                       type="button"
-                      className="btn-secondary w-full px-space-md py-1.5  text-label-md"
+                      className="btn-secondary w-full px-space-md py-2 text-label-md"
                       onClick={() => evaluateMutation.mutate()}
                       disabled={evaluateMutation.isPending}
                     >
-                      {evaluateMutation.isPending ? <Spinner className="h-3.5 w-3.5" /> : <Icon name="smart_toy" className="text-[16px]" />}
+                      {evaluateMutation.isPending ? (
+                        <Spinner className="h-3.5 w-3.5" />
+                      ) : (
+                        <Icon name="smart_toy" className="text-[16px]" />
+                      )}
                       Run AI evaluation
                     </button>
-                  </div>
+                  </section>
                 )}
 
-                {/* Awarded marks */}
-                <div className="space-y-2.5">
-                  <div className="flex items-center justify-between">
-                    <label htmlFor="awarded-mark-input" className=" text-label-md font-semibold text-primary">
-                      Awarded Marks
-                    </label>
-                    <span className=" text-label-sm text-outline">0.0 – {detail.max_marks.toFixed(1)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      id="awarded-mark-input"
-                      type="number"
-                      min={0}
-                      max={detail.max_marks}
-                      step={0.5}
-                      value={awarded}
-                      onFocus={() => setOverrideMode(true)}
-                      onChange={(e) => setAwarded(e.target.value)}
-                      className="h-11 flex-1 rounded border border-outline-variant bg-surface-container-low px-3 text-center font-mono text-headline-sm font-bold tnum text-primary transition-all focus:border-secondary focus:outline-none focus:ring-1 focus:ring-secondary"
-                    />
-                    <div className="flex flex-col gap-1">
-                      <button
-                        type="button"
-                        aria-label="Increase mark"
-                        className="flex h-5 w-8 items-center justify-center rounded border border-outline-variant bg-surface-container text-on-surface transition-colors hover:bg-surface-container-high"
-                        onClick={() => setAwarded((v) => clamp(roundTo((Number(v) || 0) + 0.5, 0.5), 0, detail.max_marks).toFixed(1))}
-                      >
-                        <Icon name="expand_less" className="text-[14px]" />
-                      </button>
-                      <button
-                        type="button"
-                        aria-label="Decrease mark"
-                        className="flex h-5 w-8 items-center justify-center rounded border border-outline-variant bg-surface-container text-on-surface transition-colors hover:bg-surface-container-high"
-                        onClick={() => setAwarded((v) => clamp(roundTo((Number(v) || 0) - 0.5, 0.5), 0, detail.max_marks).toFixed(1))}
-                      >
-                        <Icon name="expand_more" className="text-[14px]" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-col gap-2 pt-1">
-                    <button
-                      type="button"
-                      onClick={accept}
-                      disabled={reviewMutation.isPending}
-                      className="flex h-9 w-full items-center justify-center gap-1.5 rounded bg-primary-container  text-body-sm font-semibold text-on-primary shadow-sm transition-colors hover:bg-secondary disabled:opacity-50"
-                    >
-                      {reviewMutation.isPending && reviewMutation.variables?.action === "accepted" ? (
-                        <Spinner className="h-3.5 w-3.5 border-white/40 border-t-white" />
-                      ) : (
-                        <Icon name="check" className="text-[16px]" />
-                      )}
-                      Accept Suggestion (A)
-                      {detail.ai_score !== null ? <span className="font-mono">· {detail.ai_score.toFixed(1)}</span> : null}
-                    </button>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={override}
-                        disabled={!overrideMode || reviewMutation.isPending}
-                        className="flex h-8 items-center justify-center gap-1 rounded border border-outline-variant bg-surface-container-lowest  text-label-md font-medium text-on-surface transition-colors hover:bg-surface-container disabled:opacity-50"
-                      >
-                        <Icon name="edit" className="text-[14px]" /> Override (E)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={flag}
-                        disabled={reviewMutation.isPending}
-                        className="flex h-8 items-center justify-center gap-1 rounded border border-outline-variant bg-surface-container-lowest  text-label-md font-medium text-critical-fg transition-colors hover:bg-critical-bg disabled:opacity-50"
-                      >
-                        <Icon name="flag" className="text-[14px]" /> Flag (F)
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Examiner note */}
-                <div className="space-y-1 pt-1">
-                  <label htmlFor="examiner-note" className=" text-label-sm font-medium text-outline">
-                    Examiner Note
-                  </label>
-                  <textarea
-                    id="examiner-note"
-                    rows={2}
-                    value={note}
-                    onChange={(e) => setNote(e.target.value)}
-                    placeholder="Optional rationale, attached to your decision…"
-                    className="w-full resize-none rounded border border-outline-variant bg-surface-container-low p-2  text-body-sm text-on-surface focus:border-secondary focus:outline-none focus:ring-1 focus:ring-secondary"
-                  />
-                </div>
-
-                {/* Decision history + provenance */}
-                {detail.reviews.length > 0 ? (
-                  <div className="space-y-1 border-t border-outline-variant pt-3">
-                    <div className="label-overline">Decision History</div>
-                    <ul className="space-y-1.5">
-                      {detail.reviews.slice(0, 3).map((review) => (
+                <section className="space-y-1.5 border-b border-outline-variant py-3">
+                  <div className="label-overline">Decision ledger</div>
+                  {detail.reviews.length > 0 ? (
+                    <ul>
+                      {detail.reviews.slice(0, 5).map((review) => (
                         <HistoryRow key={review.id} review={review} />
                       ))}
                     </ul>
-                  </div>
-                ) : null}
+                  ) : (
+                    <p className="text-body-sm text-on-surface-variant">
+                      No decisions recorded yet.
+                    </p>
+                  )}
+                </section>
 
                 {detail.evaluation ? <Provenance evaluation={detail.evaluation} /> : null}
               </>
             )}
           </div>
 
-          {/* Shortcut footer */}
-          <div className="flex shrink-0 items-center justify-between border-t border-outline-variant bg-surface-container-low px-3 py-2 font-mono text-[11px] text-on-surface-variant">
-            <div className="flex items-center gap-2">
-              <span>
-                <strong className="text-primary">[A]</strong> Accept
-              </span>
-              <span>
-                <strong className="text-primary">[E]</strong> Override
-              </span>
-              <span>
-                <strong className="text-primary">[F]</strong> Flag
-              </span>
-              <span>
-                <strong className="text-primary">[N]</strong> Next
-              </span>
-              <span>
-                <strong className="text-primary">[P]</strong> Prev
-              </span>
+          {detail ? (
+            <div className="shrink-0 border-t border-outline-variant bg-surface-container-low px-4 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <label htmlFor="awarded-mark-input" className="text-label-md font-semibold text-primary">
+                  Mark awarded
+                </label>
+                <span className="font-mono text-[10px] text-outline">0.0 – {detail.max_marks.toFixed(1)}</span>
+              </div>
+              <div className="mt-2 flex items-stretch gap-2">
+                <input
+                  id="awarded-mark-input"
+                  type="number"
+                  min={0}
+                  max={detail.max_marks}
+                  step={0.5}
+                  value={awarded}
+                  onChange={(e) => setAwarded(e.target.value)}
+                  aria-invalid={!markIsValid}
+                  className={`h-12 min-w-0 flex-1 rounded border bg-surface-container-lowest px-3 text-center font-mono text-[24px] font-semibold tnum text-primary transition-colors focus:outline-none focus:ring-2 ${
+                    markIsValid
+                      ? "border-outline-variant focus:border-secondary focus:ring-secondary/35"
+                      : "border-critical focus:border-critical focus:ring-critical/35"
+                  }`}
+                />
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    aria-label="Increase mark"
+                    className="flex h-[22px] w-9 items-center justify-center rounded border border-outline-variant bg-surface-container-lowest text-on-surface transition-colors hover:bg-surface-container"
+                    onClick={() =>
+                      setAwarded((v) =>
+                        clamp(roundTo((Number(v) || 0) + 0.5, 0.5), 0, detail.max_marks).toFixed(1),
+                      )
+                    }
+                  >
+                    <Icon name="expand_less" className="text-[14px]" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Decrease mark"
+                    className="flex h-[22px] w-9 items-center justify-center rounded border border-outline-variant bg-surface-container-lowest text-on-surface transition-colors hover:bg-surface-container"
+                    onClick={() =>
+                      setAwarded((v) =>
+                        clamp(roundTo((Number(v) || 0) - 0.5, 0.5), 0, detail.max_marks).toFixed(1),
+                      )
+                    }
+                  >
+                    <Icon name="expand_more" className="text-[14px]" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-1.5 flex min-h-[1.25rem] items-center justify-between gap-2">
+                <span
+                  className={`font-mono text-[10px] ${
+                    !markIsValid
+                      ? "text-critical-fg"
+                      : matchesSuggestion
+                        ? "text-verified-fg"
+                        : "text-review-fg"
+                  }`}
+                >
+                  {!markIsValid
+                    ? `Enter a mark between 0 and ${detail.max_marks}`
+                    : detail.ai_score === null
+                      ? "No AI suggestion — record a teacher mark"
+                      : matchesSuggestion
+                        ? "Matches the AI suggestion"
+                        : `Overrides the AI by ${markDelta! >= 0 ? "+" : ""}${markDelta!.toFixed(1)}`}
+                </span>
+                {detail.ai_score !== null && !matchesSuggestion ? (
+                  <button
+                    type="button"
+                    onClick={useSuggestion}
+                    className="shrink-0 rounded px-1 font-mono text-[10px] text-secondary hover:underline"
+                  >
+                    Use {detail.ai_score.toFixed(1)}
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="mt-2">
+                <label htmlFor="examiner-note" className="text-label-sm font-medium text-on-surface-variant">
+                  Decision note <span className="font-normal text-outline">(optional)</span>
+                </label>
+                <textarea
+                  id="examiner-note"
+                  rows={2}
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="Why this mark?"
+                  className="mt-1 w-full resize-none rounded border border-outline-variant bg-surface-container-lowest px-2.5 py-2 text-body-sm text-on-surface placeholder:text-on-surface-variant/60 focus:border-secondary focus:outline-none focus:ring-2 focus:ring-secondary/35"
+                />
+              </div>
+
+              <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <button
+                  type="button"
+                  onClick={recordDecision}
+                  disabled={!markIsValid || reviewMutation.isPending}
+                  className="btn-primary h-10 px-3 text-body-sm font-semibold"
+                >
+                  {reviewMutation.isPending ? (
+                    <Spinner className="h-3.5 w-3.5 border-white/40 border-t-white" />
+                  ) : (
+                    <Icon name="check" className="text-[16px]" />
+                  )}
+                  {reviewMutation.isPending
+                    ? "Recording…"
+                    : activeAnswer?.is_reviewed
+                      ? `Update to ${awardedValue.toFixed(1)}`
+                      : matchesSuggestion
+                        ? `Accept ${awardedValue.toFixed(1)}`
+                        : `Record ${awardedValue.toFixed(1)}`}
+                </button>
+                <button
+                  type="button"
+                  onClick={flag}
+                  disabled={reviewMutation.isPending}
+                  className="flex h-10 items-center justify-center gap-1 rounded border border-critical-border px-3 text-label-md font-medium text-critical-fg transition-colors hover:bg-critical-bg disabled:opacity-50"
+                >
+                  <Icon name="flag" className="text-[14px]" /> Flag
+                </button>
+              </div>
+
+              <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-outline-variant pt-2 font-mono text-[10px] text-on-surface-variant">
+                <span>
+                  <strong className="text-primary">[A]</strong> record ·{" "}
+                  <strong className="text-primary">[E]</strong> edit ·{" "}
+                  <strong className="text-primary">[F]</strong> flag ·{" "}
+                  <strong className="text-primary">[N]</strong> next ·{" "}
+                  <strong className="text-primary">[P]</strong> previous
+                </span>
+                <button
+                  type="button"
+                  onClick={goNext}
+                  disabled={activeIndex >= answers.length - 1}
+                  className="flex min-h-[1.75rem] items-center gap-1 rounded px-1.5 text-primary transition-colors hover:bg-surface-container disabled:opacity-40"
+                >
+                  Next <Icon name="arrow_forward" className="text-[14px]" />
+                </button>
+              </div>
             </div>
-            <button
-              type="button"
-              onClick={goNext}
-              disabled={activeIndex >= answers.length - 1}
-              className="flex h-7 items-center gap-1 rounded bg-primary px-2.5  font-medium text-on-primary transition-colors hover:bg-secondary disabled:opacity-50"
-            >
-              Next <Icon name="arrow_forward" className="text-[14px]" />
-            </button>
-          </div>
+          ) : null}
         </aside>
       </div>
-    </div>
+      </div>
+    </>
   );
 }
 
@@ -996,24 +1153,32 @@ function AiAssessment({ evaluation }: { evaluation: Evaluation }) {
   const positives = evaluation.criteria.filter((c) => c.satisfied);
   const negatives = evaluation.criteria.filter((c) => !c.satisfied);
   return (
-    <div className="space-y-2 border-b border-outline-variant pb-3">
-      <div className="label-overline">AI Assessment</div>
-      <p className=" text-body-sm leading-relaxed text-on-surface-variant">{evaluation.reasoning}</p>
+    <section className="space-y-2 border-b border-outline-variant py-3">
+      <div className="label-overline">AI assessment</div>
+      <p className="font-reading text-[16px] leading-6 text-on-surface-variant">
+        {evaluation.reasoning}
+      </p>
 
       {evaluation.criteria.length > 0 ? (
-        <div className="space-y-1 pt-1  text-body-sm">
+        <div className="text-body-sm">
           {evaluation.criteria.map((criterion) => (
             <div
               key={criterion.id}
-              className={`flex items-center justify-between ${criterion.satisfied ? "text-verified-fg" : "text-critical-fg"}`}
+              className={`flex items-center justify-between gap-2 border-b border-outline-variant/60 py-1.5 last:border-0 ${
+                criterion.satisfied ? "text-verified-fg" : "text-critical-fg"
+              }`}
               title={criterion.comment ?? undefined}
             >
               <span className="flex min-w-0 items-center gap-1.5">
-                <span className="font-bold">{criterion.satisfied ? "✓" : "×"}</span>
+                <span className="font-mono font-medium">
+                  {criterion.satisfied ? "✓" : "×"}
+                </span>
                 <span className="truncate">{criterion.name}</span>
               </span>
               <span className="shrink-0 font-mono font-medium">
-                {criterion.satisfied ? `+${criterion.awarded_marks.toFixed(1)}` : `−${criterion.max_marks.toFixed(1)}`}
+                {criterion.satisfied
+                  ? `+${criterion.awarded_marks.toFixed(1)}`
+                  : `−${criterion.max_marks.toFixed(1)}`}
               </span>
             </div>
           ))}
@@ -1021,44 +1186,46 @@ function AiAssessment({ evaluation }: { evaluation: Evaluation }) {
       ) : null}
 
       {evaluation.contradictions.length > 0 ? (
-        <div className="rounded border border-critical-border bg-critical-bg px-2 py-1  text-label-sm text-critical-fg">
+        <div className="border-y border-critical-border bg-critical-bg px-2 py-1.5 text-label-sm text-critical-fg">
           <strong>Contradiction:</strong> {evaluation.contradictions.join("; ")}
         </div>
       ) : null}
       {positives.length === 0 && negatives.length === 0 && evaluation.gaps.length > 0 ? (
-        <ul className="space-y-0.5  text-body-sm text-on-surface-variant">
+        <ul className="space-y-1 text-body-sm text-on-surface-variant">
           {evaluation.gaps.map((gap, i) => (
-            <li key={i} className="flex items-center gap-1.5 text-critical-fg">
-              <span className="font-bold">×</span> {gap}
+            <li key={i} className="flex items-start gap-1.5 text-critical-fg">
+              <span className="font-mono">×</span> {gap}
             </li>
           ))}
         </ul>
       ) : null}
       {evaluation.flags.length > 0 ? (
-        <ul className="space-y-0.5  text-label-sm text-review-fg">
+        <ul className="space-y-1 text-label-sm text-review-fg">
           {evaluation.flags.map((flag, i) => (
-            <li key={i} className="flex items-center gap-1">
-              <Icon name="flag" className="text-[13px]" /> {flag}
+            <li key={i} className="flex items-start gap-1">
+              <Icon name="flag" className="mt-0.5 text-[13px]" /> {flag}
             </li>
           ))}
         </ul>
       ) : null}
-    </div>
+    </section>
   );
 }
 
 function HistoryRow({ review }: { review: Review }) {
   return (
-    <li className="flex items-start justify-between gap-space-sm rounded border border-outline-variant bg-surface-container-low px-2 py-1.5">
+    <li className="flex items-start justify-between gap-space-sm border-b border-outline-variant/70 py-2 last:border-0">
       <div className="min-w-0">
-        <div className=" text-label-sm font-medium text-on-surface">
-          {titleCase(review.decision)}
-          {review.teacher_score !== null ? (
-            <span className="ml-1 font-mono text-on-surface-variant">→ {review.teacher_score.toFixed(1)}</span>
-          ) : null}
+        <div className="text-body-sm font-medium text-on-surface">
+          {decisionLabel(review.decision)}
+        </div>
+        <div className="mt-0.5 font-mono text-[10px] text-outline">
+          {formatTimeAgo(review.created_at)}
         </div>
         {review.reason ? (
-          <p className="truncate  text-[11px] text-on-surface-variant">{review.reason}</p>
+          <p className="mt-0.5 line-clamp-2 text-[11px] leading-4 text-on-surface-variant">
+            {review.reason}
+          </p>
         ) : null}
       </div>
       <span className="shrink-0 font-mono text-[10px] text-outline">
@@ -1070,9 +1237,9 @@ function HistoryRow({ review }: { review: Review }) {
 
 function Provenance({ evaluation }: { evaluation: Evaluation }) {
   return (
-    <div className="space-y-1 border-t border-outline-variant pt-3">
-      <div className="label-overline">Evaluation Provenance</div>
-      <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[11px] text-on-surface-variant">
+    <section className="space-y-2 border-b border-outline-variant py-3">
+      <div className="label-overline">Evaluation provenance</div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-on-surface-variant">
         <span className="text-outline">provider</span>
         <span className="text-right">
           {evaluation.provider}
@@ -1088,10 +1255,10 @@ function Provenance({ evaluation }: { evaluation: Evaluation }) {
         <span className="text-right">{formatConfidence(evaluation.confidence)}</span>
       </div>
       {evaluation.is_mock ? (
-        <p className="rounded border border-review-border bg-review-bg px-2 py-1  text-[11px] text-review-fg">
+        <p className="border-y border-review-border bg-review-bg px-2 py-1.5 text-[11px] leading-4 text-review-fg">
           Mock provider — this score is deterministic and for demonstration only.
         </p>
       ) : null}
-    </div>
+    </section>
   );
 }

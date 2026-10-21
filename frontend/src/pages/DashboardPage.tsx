@@ -41,7 +41,7 @@ function actionFor(stats: ExamStats | undefined): { label: string; to: string } 
 }
 
 export function DashboardPage() {
-  useCrumbs([{ label: "Examination Operations" }]);
+  useCrumbs([{ label: "Dashboard" }]);
   const navigate = useNavigate();
 
   const examsQuery = useQuery({
@@ -99,8 +99,8 @@ export function DashboardPage() {
   return (
     <PageContainer>
       <PageHeader
-        title="Examinations"
-        description="Overview of active evaluation workflows and pending answer scripts."
+        title="Examination operations"
+        description="Active papers, review queues, and finalisation status across the desk."
         actions={
           <>
             <Link to="/answer-sheets" className="btn-secondary h-8 px-space-md  text-label-md">
@@ -128,19 +128,17 @@ export function DashboardPage() {
 
       {/* Examination table */}
       <div className="flex flex-col rounded border border-outline-variant bg-surface-container-lowest">
-        <div className="flex items-center justify-between border-b border-outline-variant px-space-md py-space-sm">
-          <div className="flex items-center gap-space-md  text-label-md">
-            <span className="border-b-2 border-primary pb-0.5 font-semibold text-primary">
-              Active ({examList.length})
+        <div className="flex flex-wrap items-center justify-between gap-space-sm border-b border-outline-variant px-space-md py-space-sm">
+          <div className="flex items-center gap-space-sm">
+            <h2 className="font-display text-headline-sm font-semibold text-primary">
+              Active examinations
+            </h2>
+            <span className="rounded border border-outline-variant bg-surface-container-low px-1.5 py-0.5 font-mono text-[10px] text-on-surface-variant">
+              {examList.length}
             </span>
-            {submissionsQuery.data ? (
-              <span className="text-on-surface-variant">
-                Need attention ({needsAttention.length})
-              </span>
-            ) : null}
           </div>
-          <span className=" text-label-sm text-outline">
-            {examsQuery.data ? `${examsQuery.data.total} examinations` : "Loading"}
+          <span className="text-label-sm text-outline">
+            {examsQuery.data ? `${examsQuery.data.total} total` : "Loading"}
           </span>
         </div>
 
@@ -253,21 +251,19 @@ export function DashboardPage() {
         ) : (
           <div className="divide-y divide-outline-variant  text-body-sm">
             {needsAttention.map((submission) => (
-              <div key={submission.id} className="flex items-center justify-between py-2">
+              <div key={submission.id} className="flex items-center justify-between gap-space-sm py-2">
                 <div className="flex min-w-0 items-center gap-space-sm text-on-surface">
-                  <span
-                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                      submission.status === "failed" ? "bg-critical" : "bg-review"
-                    }`}
-                    aria-hidden
+                  <StatusBadge
+                    tone={submission.status === "failed" ? "critical" : "review"}
+                    label={
+                      submission.status === "failed"
+                        ? "Processing failed"
+                        : pluralize(submission.flagged_count, "flagged answer")
+                    }
+                    dot
                   />
-                  <span className="truncate">
-                    {submission.status === "failed"
-                      ? "Processing failed"
-                      : `${pluralize(submission.flagged_count, "flagged answer")}`}
-                  </span>
                   <span className="truncate font-mono text-label-sm text-outline">
-                    ({submission.student_roll ?? "no roll"} · {submission.original_filename ?? "script"})
+                    {submission.student_roll ?? "no roll"} · {submission.original_filename ?? "script"}
                   </span>
                 </div>
                 <Link

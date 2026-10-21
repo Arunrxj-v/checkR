@@ -61,7 +61,25 @@ app = FastAPI(
     lifespan=lifespan,
     docs_url="/docs" if not settings.is_production else None,
     redoc_url=None,
+    debug=settings.debug,
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Ensure unhandled errors produce a visible traceback in development logs."""
+    logger.exception("Unhandled error processing %s %s: %s", request.method, request.url.path, exc)
+    if settings.debug:
+        import traceback
+
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"Internal Server Error: {exc}",
+                "traceback": traceback.format_exc(),
+            },
+        )
+    return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 app.add_middleware(
     CORSMiddleware,

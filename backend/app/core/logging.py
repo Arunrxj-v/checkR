@@ -20,6 +20,12 @@ class _RedactionFilter(logging.Filter):
     _KEYS = ("authorization", "api_key", "apikey", "password", "token", "secret")
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        # During development, keep tracebacks and error details visible so root causes can be diagnosed.
+        if settings.debug:
+            return True
+        if record.levelno >= logging.ERROR:
+            # Never redact error/exception log lines so tracebacks are never suppressed.
+            return True
         try:
             msg = record.getMessage().lower()
         except Exception:  # pragma: no cover - defensive

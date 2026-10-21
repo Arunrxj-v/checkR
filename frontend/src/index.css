@@ -13,9 +13,19 @@
     height: 100%;
   }
 
+  html,
+  body {
+    @apply overflow-x-clip;
+  }
+
   body {
     @apply bg-background font-sans text-on-surface antialiased;
     overscroll-behavior: none;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    @apply bg-primary-fixed text-on-primary-fixed;
   }
 
   /* Marks, identifiers and audit timestamps always use tabular figures. */
@@ -34,23 +44,30 @@
     user-select: none;
   }
 
-  /* Focus treatment is a clean 1px ring — never a soft glow. */
+  /* A real 2px keyboard ring, readable on paper and on the graphite desk. */
   :focus-visible {
-    @apply outline-none ring-1 ring-secondary ring-offset-0;
+    @apply outline-none ring-2 ring-secondary ring-offset-2 ring-offset-surface-container-lowest;
+  }
+
+  .on-desk :focus-visible {
+    @apply ring-desk-focus ring-offset-desk;
   }
 
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: #c4c6cf;
+    @apply bg-outline-variant;
     border: 3px solid transparent;
     background-clip: content-box;
     border-radius: 9999px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #9aa0ac;
+    @apply bg-outline;
     background-clip: content-box;
   }
 }
@@ -58,40 +75,49 @@
 @layer components {
   .btn {
     @apply inline-flex items-center justify-center gap-space-xs rounded font-medium transition-colors
-      disabled:cursor-not-allowed disabled:opacity-50;
+      active:translate-y-px disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
     @apply btn bg-primary-container text-on-primary hover:bg-secondary;
   }
   .btn-secondary {
     @apply btn border border-outline-variant bg-surface-container-lowest text-on-surface
-      hover:bg-surface-container-low;
+      hover:border-outline hover:bg-surface-container-low;
   }
   .btn-destructive {
-    @apply btn bg-critical text-white hover:brightness-95;
+    @apply btn bg-critical text-on-primary hover:brightness-90;
   }
   .btn-ghost {
     @apply btn text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface;
   }
 
   .field {
-    @apply w-full rounded border border-outline-variant bg-surface-container-lowest px-2.5 py-1.5
-       text-body-md text-on-surface placeholder:text-on-surface-variant/60
-      focus:border-secondary focus:outline-none focus:ring-1 focus:ring-secondary;
+    @apply w-full rounded border border-outline-variant bg-surface-container-lowest px-3 py-2
+       text-body-md text-on-surface placeholder:text-on-surface-variant/70
+      focus:border-secondary focus:outline-none focus:ring-2 focus:ring-secondary/35;
   }
 
   .label-overline {
-    @apply  text-label-sm font-semibold uppercase tracking-wider text-outline;
+    @apply font-mono text-label-sm font-medium uppercase tracking-[0.12em] text-outline;
   }
 
   .panel {
     @apply rounded-lg border border-outline-variant bg-surface-container-lowest;
   }
+
+  .desk-rule {
+    @apply border-desk-line;
+  }
 }
 
 /* Skeleton shimmer used while data loads. */
 .skeleton {
-  background: linear-gradient(90deg, #eef1fb 25%, #e1e8fd 37%, #eef1fb 63%);
+  @apply animate-shimmer rounded bg-surface-container-low;
+  background-image: linear-gradient(
+    90deg,
+    transparent 25%,
+    theme("colors.surface-container-lowest") 37%,
+    transparent 63%
+  );
   background-size: 1000px 100%;
-  @apply animate-shimmer rounded;
 }

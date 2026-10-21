@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { tokens } from "@/lib/api";
+import { apiUrl, tokens } from "@/lib/api";
 
 import { Spinner } from "./Spinner";
 
@@ -33,7 +33,7 @@ export function AuthImage({ path, alt, className = "", style, onError, onLoad }:
     const controller = new AbortController();
     const access = tokens.access();
 
-    fetch(`/api${path}`, {
+    fetch(apiUrl(path), {
       headers: access ? { Authorization: `Bearer ${access}` } : undefined,
       signal: controller.signal,
     })

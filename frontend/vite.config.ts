@@ -84,13 +84,21 @@ export default defineConfig(({ mode }) => {
       target,
       changeOrigin: true,
       configure(proxy) {
-        proxy.on("error", (err: Error) => {
+        proxy.on("error", (err: Error, _req, res: any) => {
           // The default Vite handler prints a bare stack trace; say what to do.
           console.error(
             `\n  [checkr] /api proxy error talking to ${target}: ${err.message}\n` +
               `  [checkr] Is the CheckR backend running on that port? Override with ` +
               `VITE_PROXY_TARGET if not.\n`,
           );
+          if (res && typeof res.writeHead === "function" && !res.headersSent) {
+            res.writeHead(503, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                detail: `Cannot reach backend API at ${target}. Please ensure the CheckR backend container or server is running. (${err.message})`,
+              }),
+            );
+          }
         });
       },
     },
@@ -104,6 +112,13 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: 5173,
+      proxy,
+    },
+    // `vite preview` serves the production bundle; keep `/api` wired to the same
+    // backend so a build can be verified without a separate reverse proxy.
+    preview: {
+      host: true,
+      port: 4173,
       proxy,
     },
   };

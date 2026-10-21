@@ -21,14 +21,6 @@ export const TONE_BADGE: Record<Tone, string> = {
   info: "bg-secondary-fixed text-on-secondary-fixed-variant border-secondary-fixed-dim",
 };
 
-export const TONE_DOT: Record<Tone, string> = {
-  verified: "bg-verified",
-  review: "bg-review",
-  critical: "bg-critical",
-  neutral: "bg-outline",
-  info: "bg-secondary",
-};
-
 export const TONE_TEXT: Record<Tone, string> = {
   verified: "text-verified-fg",
   review: "text-review-fg",
