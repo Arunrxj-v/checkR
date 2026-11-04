@@ -2,8 +2,16 @@
 
 Creates a fully demonstrable examination (Computer Networks — Internal
 Examination) with questions, marking schemes, a generated handwritten-style
-sample answer sheet, and — when AI_MODE is mock — runs it through the pipeline
-so the evaluation workspace is populated immediately after setup.
+sample answer sheet, and a sample submission so the evaluation workspace is
+populated immediately after setup.
+
+The sample submission is **seed data, not AI output**: its transcription comes
+straight from the manuscript used to draw the sample script, and its scores
+come from an explicitly constructed deterministic provider. Both are stored
+with ``is_mock=True`` / ``provider="seed"`` and ``processing_meta.seed_data``
+so they are always distinguishable from real inference. The seed never calls
+the configured AI provider — real submissions are never given fabricated
+results, and startup never waits on a model.
 
 Idempotent: does nothing if the teacher account already exists.
 """
@@ -11,7 +19,6 @@ Idempotent: does nothing if the teacher account already exists.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -218,11 +225,17 @@ def _build_sample_script() -> tuple[bytes, list[str], list[list[dict]]]:
 
 
 async def _create_sample_submission() -> str | None:
-    """Create the demo submission and run it through the pipeline synchronously."""
-    from app.ai.factory import get_provider
-    from app.ai.validation import validate_ocr
+    """Create the demo submission as deterministic seed data.
+
+    No AI provider is involved: the manuscript text and the boxes it was drawn
+    at *are* the stored OCR (labelled ``provider="seed"``, ``is_mock=True``),
+    and scoring uses an explicitly constructed deterministic provider. This
+    keeps the development demo reproducible without ever presenting fabricated
+    results as real inference.
+    """
+    from app.ai.mock import MockProvider
     from app.db.enums import AnswerStatus, PageStatus, SubmissionStatus
-    from app.imaging import render_pdf_pages
+    from app.imaging import preprocess_page, render_pdf_pages
     from app.models.answer import Answer, AnswerRegion, OCRResult
     from app.models.submission import Submission, SubmissionPage
     from app.prompts.registry import CURRENT_OCR_PROMPT_VERSION
@@ -282,10 +295,9 @@ async def _create_sample_submission() -> str | None:
             )
         await db.flush()
 
-        # Preprocess + OCR + store.
-        provider = get_provider()
-        from app.imaging import preprocess_page
-
+        # Store the manuscript as seed OCR. No AI provider is called: the text
+        # and boxes the sample script was drawn from are recorded verbatim and
+        # labelled as seed data, so nothing here can be mistaken for inference.
         pages_ocr: list[dict] = []
         for page in (
             await db.execute(
@@ -305,47 +317,37 @@ async def _create_sample_submission() -> str | None:
             page.deskew_angle = result.deskew_angle
             page.status = PageStatus.OCR_DONE
 
-            ocr_raw = await provider.transcribe_page(
-                result.processed,
-                page_number=page.page_number,
-                prompt_version=CURRENT_OCR_PROMPT_VERSION,
+            index = page.page_number - 1
+            text = page_texts[index].strip() if 0 <= index < len(page_texts) else ""
+            regions = (
+                [dict(box, confidence=None) for box in page_boxes[index]]
+                if 0 <= index < len(page_boxes)
+                else []
             )
-            ocr = validate_ocr(ocr_raw)
-            # The manuscript is generated from known text, so use it — together
-            # with the boxes the lines were drawn at — as the transcript: the
-            # demo stays internally coherent (what the pipeline "reads" matches
-            # what is visibly written, and where it is written) while still
-            # being produced through the provider abstraction and labelled mock.
-            if page.page_number <= len(page_boxes):
-                ocr = replace(
-                    ocr,
-                    text=page_texts[page.page_number - 1].strip(),
-                    regions=[
-                        {**box, "confidence": ocr.confidence}
-                        for box in page_boxes[page.page_number - 1]
-                    ],
-                )
             db.add(
                 OCRResult(
                     page_id=page.id,
-                    provider=ocr.provider,
-                    model=ocr.model,
-                    prompt_version=ocr.prompt_version,
-                    text=ocr.text,
-                    confidence=ocr.confidence,
-                    regions=ocr.regions,
-                    raw_response=ocr.raw,
-                    is_mock=ocr.is_mock,
+                    provider="seed",
+                    model="seed-deterministic",
+                    prompt_version=CURRENT_OCR_PROMPT_VERSION,
+                    text=text,
+                    confidence=None,
+                    regions=regions,
+                    raw_response={
+                        "seed_data": True,
+                        "page_number": page.page_number,
+                    },
+                    is_mock=True,
                 )
             )
-            page.ocr_confidence = ocr.confidence
+            page.ocr_confidence = None
             pages_ocr.append(
                 {
                     "page_id": str(page.id),
                     "page_number": page.page_number,
-                    "text": ocr.text,
-                    "regions": ocr.regions,
-                    "confidence": ocr.confidence,
+                    "text": text,
+                    "regions": regions,
+                    "confidence": None,
                 }
             )
         await db.flush()
@@ -419,18 +421,26 @@ async def _create_sample_submission() -> str | None:
                     )
         await db.flush()
 
-        # Evaluate every answer with the configured provider (mock by default).
+        # Score every answer with an explicitly constructed deterministic
+        # provider — seed data, labelled as such, never the configured runtime.
+        seed_provider = MockProvider(seed_salt="seed")
         answers = (
             await db.execute(select(Answer).where(Answer.submission_id == submission.id))
         ).scalars().all()
         for answer in answers:
             question = next(q for q in questions if q.id == answer.question_id)
             try:
-                await evaluation_service.evaluate_answer(db, answer=answer, question=question)
+                await evaluation_service.evaluate_answer(
+                    db, answer=answer, question=question, provider=seed_provider
+                )
             except Exception as exc:
                 logger.warning("Seed evaluation skipped for %s: %s", answer.id, exc)
 
         submission.status = SubmissionStatus.READY_FOR_REVIEW
+        submission.processing_meta = {
+            **(submission.processing_meta or {}),
+            "seed_data": True,
+        }
         await result_service.recompute_submission_totals(db, submission)
         await db.commit()
         return str(submission.id)

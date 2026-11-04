@@ -1242,8 +1242,8 @@ function Provenance({ evaluation }: { evaluation: Evaluation }) {
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-on-surface-variant">
         <span className="text-outline">provider</span>
         <span className="text-right">
-          {evaluation.provider}
-          {evaluation.is_mock ? " (mock)" : ""}
+          {evaluation.provider === "ollama" ? "Ollama · local" : evaluation.provider}
+          {evaluation.is_mock ? " (seed)" : ""}
         </span>
         <span className="text-outline">model</span>
         <span className="truncate text-right">{evaluation.model}</span>
@@ -1256,9 +1256,14 @@ function Provenance({ evaluation }: { evaluation: Evaluation }) {
       </div>
       {evaluation.is_mock ? (
         <p className="border-y border-review-border bg-review-bg px-2 py-1.5 text-[11px] leading-4 text-review-fg">
-          Mock provider — this score is deterministic and for demonstration only.
+          Seeded demo data — not produced by live AI inference. Evaluate a real upload to see
+          model results.
         </p>
-      ) : null}
+      ) : (
+        <p className="border-y border-outline-variant px-2 py-1.5 text-[11px] leading-4 text-on-surface-variant">
+          Proposed marks from local inference — the teacher&apos;s decision is final.
+        </p>
+      )}
     </section>
   );
 }

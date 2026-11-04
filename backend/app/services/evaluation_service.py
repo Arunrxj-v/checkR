@@ -151,17 +151,24 @@ async def evaluate_answer(
     question: Question,
     force: bool = False,
     actor=None,
+    provider=None,
 ) -> Evaluation | None:
     """Evaluate a single answer and persist the result.
 
     Returns ``None`` (after marking the answer failed) if the provider could not
     produce a usable result — the caller/worker decides whether to retry.
+
+    ``provider`` overrides the configured provider (used by the deterministic
+    development seed only). Production paths always use the configured runtime.
     """
     if answer.status == AnswerStatus.EVALUATED and not force:
         return None
     if answer.status == AnswerStatus.REVIEWED and not force:
         # A human already decided; never silently overwrite their work.
         return None
+
+    if provider is None and not settings.evaluation_enabled:
+        raise EvaluationError("AI evaluation is disabled (EVALUATION_ENABLED=false).")
 
     if actor is None:
         # Worker-initiated evaluations act on behalf of the teacher who owns the
@@ -190,7 +197,7 @@ async def evaluate_answer(
     context = build_context(answer, question, page_numbers=page_numbers, images=images)
     _, _, prompt_version = build_evaluation_prompt(context)
 
-    provider = get_provider()
+    provider = provider or get_provider()
     answer.status = AnswerStatus.EVALUATING
     await db.flush()
 
@@ -299,7 +306,7 @@ async def evaluate_answer(
         actor=actor,
         entity_id=answer.id,
         description=(
-            f"{'Mock' if sanitized.is_mock else 'AI'} evaluation: "
+            f"AI evaluation ({sanitized.provider}): "
             f"{sanitized.awarded_marks:g}/{float(question.max_marks):g} "
             f"({sanitized.confidence:.0%} confidence)."
         ),

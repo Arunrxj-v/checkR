@@ -34,6 +34,31 @@ async def lifespan(app: FastAPI):
     for warning in settings.warnings():
         logger.warning("Configuration: %s", warning)
 
+    # Verify local inference before any job can be queued. A failure here is
+    # reported loudly (never silently degraded to another provider) but does
+    # not block startup: uploads are rejected at processing time with the same
+    # actionable message.
+    try:
+        from app.ai.factory import get_provider
+
+        ai_status = await get_provider().health()
+        if ai_status.get("ok"):
+            logger.info(
+                "AI ready: %s (%s, provider=%s) — %s",
+                ai_status.get("display_name", ai_status.get("model")),
+                ai_status.get("model"),
+                ai_status.get("provider"),
+                ai_status.get("detail", ""),
+            )
+        else:
+            logger.warning(
+                "AI not ready (%s): %s",
+                ai_status.get("status", "unknown"),
+                ai_status.get("detail", "Unknown AI problem."),
+            )
+    except Exception as exc:  # never block startup on a status probe
+        logger.warning("AI status check failed: %s", exc)
+
     if settings.seed_on_startup and not settings.is_production:
         try:
             from app.db.seed import ensure_demo_data

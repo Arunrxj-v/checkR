@@ -82,6 +82,7 @@ class LocalVisionProvider:
         *,
         page_number: int,
         prompt_version: str = "handwriting_v1",
+        previous_context: str | None = None,
     ) -> OCRPageResult:
         from app.prompts.registry import ocr_prompt
 

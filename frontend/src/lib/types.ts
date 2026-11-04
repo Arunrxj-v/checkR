@@ -390,7 +390,17 @@ export interface AppSettings {
   ai: {
     provider: string;
     model: string;
+    /** Human label for the configured model, e.g. "Gemma 3 4B · Local". */
+    display_name: string;
     is_mock: boolean;
+    /** ok | unavailable | model_missing (from the backend health probe). */
+    status: string;
+    /** Actionable explanation, e.g. "Run: ollama pull gemma3:4b". */
+    detail: string;
+    available: boolean;
+    model_installed: boolean;
+    ocr_enabled: boolean;
+    evaluation_enabled: boolean;
     confidence_high: number;
     confidence_medium: number;
   };

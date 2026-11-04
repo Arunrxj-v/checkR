@@ -50,15 +50,15 @@ const SUBMISSION_TONES: Record<SubmissionStatus, Tone> = {
 };
 
 const SUBMISSION_LABELS: Record<SubmissionStatus, string> = {
-  uploaded: "Queued",
+  uploaded: "Waiting for processing",
   processing: "Processing",
-  ocr_processing: "Reading Handwriting",
-  answers_detected: "Matching Answers",
-  ai_evaluating: "AI Evaluating",
-  ready_for_review: "In Review",
+  ocr_processing: "Reading handwriting",
+  answers_detected: "Extracting answers",
+  ai_evaluating: "Evaluating answer",
+  ready_for_review: "Ready for teacher review",
   reviewed: "Reviewed",
   completed: "Completed",
-  failed: "Failed",
+  failed: "Processing failed",
 };
 
 export function submissionTone(status: SubmissionStatus): Tone {
@@ -94,12 +94,12 @@ const ANSWER_TONES: Record<AnswerStatus, Tone> = {
 };
 
 const ANSWER_LABELS: Record<AnswerStatus, string> = {
-  pending: "Pending",
-  evaluating: "Evaluating",
-  evaluated: "AI Evaluated",
+  pending: "Waiting for evaluation",
+  evaluating: "Evaluating answer",
+  evaluated: "AI evaluated",
   reviewed: "Reviewed",
-  flagged: "Needs Review",
-  failed: "Failed",
+  flagged: "Needs manual review",
+  failed: "Evaluation failed",
 };
 
 export function answerTone(status: AnswerStatus, isFlagged = false): Tone {

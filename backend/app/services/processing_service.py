@@ -21,6 +21,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.ai.base import AIProvider, AIProviderError
 from app.ai.factory import get_provider
 from app.ai.validation import validate_ocr
 from app.core.config import settings
@@ -53,6 +54,23 @@ logger = get_logger(__name__)
 
 class ProcessingError(Exception):
     """Raised when a stage cannot complete."""
+
+
+async def preflight_ai(provider: AIProvider | None = None) -> None:
+    """Fail fast — and explicitly — when local inference cannot run.
+
+    Providers that can check themselves (Ollama) raise an :class:`AIProviderError`
+    with an actionable message. Nothing here ever falls back to a mock.
+    """
+    provider = provider or get_provider()
+    checker = getattr(provider, "require_available", None)
+    if callable(checker):
+        await checker()
+
+
+def _fatal_ai_error(exc: AIProviderError) -> bool:
+    """Errors that make every remaining page/answer fail the same way."""
+    return exc.kind in ("unavailable", "model_missing", "config")
 
 
 # --------------------------------------------------------------------------- #
@@ -135,8 +153,44 @@ async def _preprocess_and_store(page: SubmissionPage) -> None:
     page.status = PageStatus.PREPROCESSED
 
 
-async def _transcribe_page(db: AsyncSession, page: SubmissionPage, *, force: bool = False) -> None:
-    """OCR a page, reusing an existing result unless ``force`` is set."""
+async def _latest_ocr_text(db: AsyncSession, page: SubmissionPage) -> str | None:
+    """The stored transcription for a page, if any (used as continuation context)."""
+    row = (
+        await db.execute(
+            select(OCRResult)
+            .where(OCRResult.page_id == page.id)
+            .order_by(OCRResult.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return row.text if row else None
+
+
+async def _previous_page_context(
+    db: AsyncSession, pages: list[SubmissionPage], page: SubmissionPage
+) -> str | None:
+    """Tail of the previous page's transcription, so continuations are visible."""
+    index = next((i for i, p in enumerate(pages) if p.id == page.id), None)
+    if index is None or index == 0:
+        return None
+    previous = pages[index - 1]
+    if previous.page_number != page.page_number - 1:
+        return None
+    text = await _latest_ocr_text(db, previous)
+    return text[-1200:] if text else None
+
+
+async def _transcribe_page(
+    db: AsyncSession,
+    page: SubmissionPage,
+    *,
+    force: bool = False,
+    previous_context: str | None = None,
+) -> str | None:
+    """OCR a page, reusing an existing result unless ``force`` is set.
+
+    Returns the page's transcription (freshly read or cached).
+    """
     if not force:
         existing = (
             await db.execute(
@@ -152,7 +206,7 @@ async def _transcribe_page(db: AsyncSession, page: SubmissionPage, *, force: boo
         if existing is not None:
             page.ocr_confidence = existing.confidence
             page.status = PageStatus.OCR_DONE
-            return
+            return existing.text
 
     storage = get_storage()
     key = page.processed_storage_key or page.original_storage_key
@@ -160,7 +214,10 @@ async def _transcribe_page(db: AsyncSession, page: SubmissionPage, *, force: boo
 
     provider = get_provider()
     raw_result = await provider.transcribe_page(
-        image, page_number=page.page_number, prompt_version=CURRENT_OCR_PROMPT_VERSION
+        image,
+        page_number=page.page_number,
+        prompt_version=CURRENT_OCR_PROMPT_VERSION,
+        previous_context=previous_context,
     )
     result = validate_ocr(raw_result)
 
@@ -180,6 +237,9 @@ async def _transcribe_page(db: AsyncSession, page: SubmissionPage, *, force: boo
             text=result.text,
             confidence=result.confidence,
             regions=result.regions,
+            # The full structured response (detected answers, diagrams,
+            # unreadable regions, review flag) is kept verbatim for
+            # segmentation, audit and re-derivation.
             raw_response=result.raw if isinstance(result.raw, dict) else {},
             is_mock=result.is_mock,
         )
@@ -188,6 +248,7 @@ async def _transcribe_page(db: AsyncSession, page: SubmissionPage, *, force: boo
     page.status = PageStatus.OCR_DONE
     page.error_message = None
     await db.flush()
+    return result.text
 
 
 # --------------------------------------------------------------------------- #
@@ -221,15 +282,54 @@ async def process_submission(db: AsyncSession, job: ProcessingJob) -> None:
     submission.status = SubmissionStatus.OCR_PROCESSING
     await db.flush()
 
+    # Explicit capability checks: a disabled capability or an unreachable
+    # inference runtime fails the submission with an actionable message —
+    # it never degrades into fabricated results.
+    if not settings.ocr_enabled:
+        message = "Handwriting recognition is disabled (OCR_ENABLED=false)."
+        submission.status = SubmissionStatus.FAILED
+        submission.error_message = message
+        await db.flush()
+        raise ProcessingError(message)
+
+    provider = get_provider()
+    try:
+        await preflight_ai(provider)
+    except AIProviderError as exc:
+        submission.status = SubmissionStatus.FAILED
+        submission.error_message = str(exc)
+        await db.flush()
+        raise ProcessingError(str(exc)) from exc
+
     processed = 0
     failed_pages: list[int] = []
+    first_ai_error: str | None = None
     for page in pages:
         try:
             await _preprocess_and_store(page)
             await db.flush()
-            await _transcribe_page(db, page)
+            previous_context = await _previous_page_context(db, pages, page)
+            await _transcribe_page(db, page, previous_context=previous_context)
             await db.flush()
             processed += 1
+        except AIProviderError as exc:
+            # One bad page must not kill the batch — but a runtime that cannot
+            # serve *any* page (down / model missing / misconfigured) aborts.
+            logger.warning(
+                "AI error on page %s of %s: %s", page.page_number, submission.id, exc
+            )
+            page.status = PageStatus.FAILED
+            page.error_message = str(exc)[:500]
+            failed_pages.append(page.page_number)
+            first_ai_error = first_ai_error or str(exc)
+            submission.processed_page_count = processed
+            await db.flush()
+            if _fatal_ai_error(exc):
+                submission.status = SubmissionStatus.FAILED
+                submission.error_message = str(exc)
+                await db.flush()
+                raise ProcessingError(str(exc)) from exc
+            continue
         except Exception as exc:  # one bad page must not kill the batch
             logger.warning("Page %s of %s failed: %s", page.page_number, submission.id, exc)
             page.status = PageStatus.FAILED
@@ -242,9 +342,11 @@ async def process_submission(db: AsyncSession, job: ProcessingJob) -> None:
 
     if processed == 0:
         submission.status = SubmissionStatus.FAILED
-        submission.error_message = "No pages could be processed. Check the scan quality."
+        submission.error_message = (
+            first_ai_error or "No pages could be processed. Check the scan quality."
+        )
         await db.flush()
-        raise ProcessingError("No pages could be processed.")
+        raise ProcessingError(submission.error_message)
 
     submission.processing_meta = {
         **(submission.processing_meta or {}),
@@ -312,6 +414,7 @@ async def segment_answers_job(db: AsyncSession, job: ProcessingJob) -> None:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        raw = ocr.raw_response if ocr is not None and isinstance(ocr.raw_response, dict) else {}
         pages_ocr.append(
             {
                 "page_id": str(page.id),
@@ -319,6 +422,10 @@ async def segment_answers_job(db: AsyncSession, job: ProcessingJob) -> None:
                 "text": ocr.text if ocr else "",
                 "regions": ocr.regions if ocr else [],
                 "confidence": ocr.confidence if ocr else None,
+                # Structure the vision model located on this page (question
+                # numbers, continuation flags, regions, uncertain segments).
+                "detected_answers": raw.get("detected_answers") or [],
+                "manual_review_required": bool(raw.get("manual_review_required")),
             }
         )
 
@@ -343,6 +450,14 @@ async def segment_answers_job(db: AsyncSession, job: ProcessingJob) -> None:
         transcription = block.transcription if block else ""
         ocr_conf = block.confidence if block else None
         uncertain = bool(block.boundary_uncertain) if block else True
+        # A page the model flagged as needing manual review keeps its answers
+        # in the "verify by hand" state even when the text looked readable.
+        source_pages = block.page_numbers if block else []
+        needs_manual = any(
+            p.get("manual_review_required")
+            for p in pages_ocr
+            if int(p.get("page_number", 0)) in source_pages
+        )
 
         answer = Answer(
             submission_id=submission.id,
@@ -352,10 +467,15 @@ async def segment_answers_job(db: AsyncSession, job: ProcessingJob) -> None:
             transcription=transcription or None,
             ocr_confidence=ocr_conf,
             max_marks=question.max_marks,
-            is_handwriting_uncertain=uncertain,
+            is_handwriting_uncertain=uncertain or needs_manual,
             detection_meta={
                 "has_content": bool(transcription.strip()),
-                "source_pages": block.page_numbers if block else [],
+                "source_pages": source_pages,
+                "sub_questions": list(block.sub_labels) if block else [],
+                "uncertain_segments": list(block.uncertain_segments) if block else [],
+                "detected_by_model": bool(block.detected_by_model) if block else False,
+                "unresolved_continuation": bool(block.unresolved_continuation) if block else False,
+                "manual_review_required": needs_manual,
             },
         )
         if not transcription.strip():
@@ -424,11 +544,27 @@ async def evaluate_submission(db: AsyncSession, job: ProcessingJob) -> None:
         ).scalars().all()
     )
 
+    # Explicit capability checks before touching any answer (see preflight_ai).
+    if not settings.evaluation_enabled:
+        message = "AI evaluation is disabled (EVALUATION_ENABLED=false)."
+        submission.status = SubmissionStatus.FAILED
+        submission.error_message = message
+        await db.flush()
+        raise ProcessingError(message)
+    try:
+        await preflight_ai()
+    except AIProviderError as exc:
+        submission.status = SubmissionStatus.FAILED
+        submission.error_message = str(exc)
+        await db.flush()
+        raise ProcessingError(str(exc)) from exc
+
     submission.status = SubmissionStatus.AI_EVALUATING
     await db.flush()
 
     evaluated = 0
     failures = 0
+    first_answer_error: str | None = None
     for answer in answers:
         if answer.is_reviewed and not force:
             continue
@@ -440,9 +576,26 @@ async def evaluate_submission(db: AsyncSession, job: ProcessingJob) -> None:
             )
             if result is not None:
                 evaluated += 1
+        except AIProviderError as exc:
+            logger.warning("Evaluation error for answer %s: %s", answer.id, exc)
+            failures += 1
+            first_answer_error = first_answer_error or str(exc)
+            await db.rollback()
+            # Re-fetch in a clean state so the loop can continue.
+            submission = (
+                await db.execute(select(Submission).where(Submission.id == job.submission_id))
+            ).scalar_one()
+            if _fatal_ai_error(exc):
+                # The runtime itself is unusable; every remaining answer would
+                # fail the same way. Stop and surface the actionable message.
+                submission.status = SubmissionStatus.FAILED
+                submission.error_message = str(exc)
+                await db.flush()
+                raise ProcessingError(str(exc)) from exc
         except Exception as exc:  # keep going; surface at the end
             logger.warning("Evaluation error for answer %s: %s", answer.id, exc)
             failures += 1
+            first_answer_error = first_answer_error or str(exc)
             await db.rollback()
             # Re-fetch in a clean state so the loop can continue.
             submission = (
@@ -461,7 +614,10 @@ async def evaluate_submission(db: AsyncSession, job: ProcessingJob) -> None:
         submission.error_message = None
     elif failures:
         submission.status = SubmissionStatus.FAILED
-        submission.error_message = "AI evaluation failed for every answer. See job logs."
+        submission.error_message = (
+            first_answer_error
+            or "AI evaluation failed for every answer. See job logs."
+        )
     await db.flush()
 
 
@@ -498,7 +654,9 @@ async def preprocess_page_job(db: AsyncSession, job: ProcessingJob) -> None:
     await _preprocess_and_store(page)
     page.error_message = None
     await db.flush()
-    await _transcribe_page(db, page, force=True)
+    pages = await _load_pages(db, page.submission_id)
+    previous_context = await _previous_page_context(db, pages, page)
+    await _transcribe_page(db, page, force=True, previous_context=previous_context)
     await db.flush()
     await job_service.enqueue(
         db, job_type=JobType.SEGMENT_ANSWERS, submission_id=page.submission_id
@@ -513,7 +671,9 @@ async def ocr_page_job(db: AsyncSession, job: ProcessingJob) -> None:
     ).scalar_one_or_none()
     if page is None:
         raise ProcessingError("Page no longer exists.")
-    await _transcribe_page(db, page, force=True)
+    pages = await _load_pages(db, page.submission_id)
+    previous_context = await _previous_page_context(db, pages, page)
+    await _transcribe_page(db, page, force=True, previous_context=previous_context)
     await db.flush()
     await job_service.enqueue(
         db, job_type=JobType.SEGMENT_ANSWERS, submission_id=page.submission_id

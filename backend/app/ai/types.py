@@ -1,8 +1,8 @@
 """Provider-agnostic value objects returned by the AI layer.
 
 These dataclasses are what the rest of the application depends on. Concrete
-providers (mock, Gemini, OpenAI, Anthropic, local) translate their own wire
-formats into these types, so no provider-specific shape leaks into services.
+providers (ollama, mock, Gemini, OpenAI, Anthropic, local) translate their own
+wire formats into these types, so no provider-specific shape leaks into services.
 """
 
 from __future__ import annotations
@@ -22,6 +22,14 @@ class OCRPageResult:
     provider: str = ""
     prompt_version: str = ""
     is_mock: bool = False
+    #: Question blocks the model located on this page. Each entry:
+    #: ``{question_number, transcription, started_on_previous_page,
+    #: continues_on_next_page, regions, uncertain_segments, confidence}``.
+    detected_answers: list[dict] = field(default_factory=list)
+    diagrams: list[dict] = field(default_factory=list)
+    unreadable_regions: list[dict] = field(default_factory=list)
+    #: True when the model believes a human must look at this page.
+    manual_review_required: bool = False
 
 
 @dataclass(slots=True)

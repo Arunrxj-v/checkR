@@ -6,7 +6,7 @@ Pydantic models before it can reach the database.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class RawCriterion(BaseModel):
@@ -77,13 +77,108 @@ class RawOCRRegion(BaseModel):
     x1: float | None = None
     y1: float | None = None
 
+    @field_validator("x0", "y0", "x1", "y1", mode="before")
+    @classmethod
+    def _coerce_coord(cls, v: object) -> float | None:
+        if v is None:
+            return None
+        try:
+            return float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
 
-class RawOCR(BaseModel):
+
+class RawDetectedAnswer(BaseModel):
+    """One question block the model located on the page."""
+
     model_config = {"extra": "ignore"}
 
+    question_number: str = ""
+    transcription: str = ""
+    started_on_previous_page: bool = False
+    continues_on_next_page: bool = False
+    regions: list[RawOCRRegion] = Field(default_factory=list)
+    uncertain_segments: list[str] = Field(default_factory=list)
+    confidence: float | None = None
+
+    @field_validator("question_number", mode="before")
+    @classmethod
+    def _coerce_number(cls, v: object) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("transcription", mode="before")
+    @classmethod
+    def _coerce_text(cls, v: object) -> str:
+        return "" if v is None else str(v)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def _coerce_conf(cls, v: object) -> float | None:
+        if v is None:
+            return None
+        try:
+            return float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("uncertain_segments", mode="before")
+    @classmethod
+    def _coerce_segments(cls, v: object) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        if isinstance(v, (list, tuple)):
+            return [str(x) for x in v if x is not None]
+        return [str(v)]
+
+
+class RawOCRDiagram(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    caption: str = ""
+    region: RawOCRRegion | None = None
+
+    @field_validator("caption", mode="before")
+    @classmethod
+    def _coerce_caption(cls, v: object) -> str:
+        return "" if v is None else str(v)
+
+
+class RawUnreadableRegion(BaseModel):
+    model_config = {"extra": "ignore"}
+
+    reason: str = ""
+    region: RawOCRRegion | None = None
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _coerce_reason(cls, v: object) -> str:
+        return "" if v is None else str(v)
+
+
+class RawOCR(BaseModel):
+    """The structured shape we ask every vision provider to return per page."""
+
+    model_config = {"extra": "ignore"}
+
+    page_number: int | None = None
     text: str = ""
     confidence: float = 0.0
     regions: list[RawOCRRegion] = Field(default_factory=list)
+    detected_answers: list[RawDetectedAnswer] = Field(default_factory=list)
+    diagrams: list[RawOCRDiagram] = Field(default_factory=list)
+    unreadable_regions: list[RawUnreadableRegion] = Field(default_factory=list)
+    manual_review_required: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_transcription_alias(cls, data: object) -> object:
+        # The OCR prompt labels the page-level text ``transcription`` while
+        # older prompts used ``text`` — accept both, prefer the explicit key.
+        if isinstance(data, dict) and "text" not in data and "transcription" in data:
+            return {**data, "text": data["transcription"]}
+        return data
 
     @field_validator("text", mode="before")
     @classmethod
@@ -97,3 +192,21 @@ class RawOCR(BaseModel):
             return float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0.0
+
+    @field_validator("manual_review_required", mode="before")
+    @classmethod
+    def _coerce_bool(cls, v: object) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "yes", "1")
+        return bool(v)
+
+    @field_validator("detected_answers", mode="before")
+    @classmethod
+    def _coerce_answers(cls, v: object) -> list:
+        if v is None:
+            return []
+        if isinstance(v, dict):
+            return [v]
+        if isinstance(v, (list, tuple)):
+            return list(v)
+        return []

@@ -350,18 +350,25 @@ export function AppShell() {
               {settings ? (
                 <span
                   className={`hidden items-center gap-space-xs rounded border px-space-sm py-1 font-mono text-[10px] uppercase tracking-[0.08em] sm:flex ${
-                    settings.ai.is_mock
-                      ? "border-review/50 bg-desk-raised text-review-border"
-                      : "border-desk-line bg-desk-raised text-desk-muted"
+                    settings.ai.status === "ok"
+                      ? "border-desk-line bg-desk-raised text-desk-muted"
+                      : "border-critical-border bg-critical-bg text-critical-fg"
                   }`}
                   title={
-                    settings.ai.is_mock
-                      ? "Deterministic mock provider — results are reproducible and clearly marked."
-                      : `Live provider: ${settings.ai.provider}`
+                    settings.ai.status === "ok"
+                      ? `${settings.ai.display_name} — local inference ready (${settings.ai.provider})`
+                      : settings.ai.detail
                   }
                 >
-                  <Icon name={settings.ai.is_mock ? "science" : "verified"} className="text-[14px]" />
-                  {settings.ai.is_mock ? "Mock AI" : "Live AI"}
+                  <Icon
+                    name={settings.ai.status === "ok" ? "verified" : "error"}
+                    className="text-[14px]"
+                  />
+                  {settings.ai.status === "ok"
+                    ? settings.ai.display_name
+                    : settings.ai.status === "model_missing"
+                      ? "Model not installed"
+                      : "Ollama unavailable"}
                   <span className="hidden text-desk-muted md:inline">{settings.ai.provider}</span>
                 </span>
               ) : null}
@@ -402,13 +409,18 @@ export function AppShell() {
   );
 }
 
-export function MockModeBanner({ children }: { children?: ReactNode }) {
+/**
+ * Banner shown when local inference cannot serve requests. Replaces the old
+ * mock-mode notice: the backend reports the exact problem (Ollama stopped,
+ * model not installed, capability disabled) and the message here is verbatim.
+ */
+export function AiStatusBanner({ detail, children }: { detail?: string; children?: ReactNode }) {
   return (
-    <div className="flex items-start gap-space-sm border-b border-review-border bg-review-bg px-space-md py-2 text-body-sm text-review-fg">
-      <Icon name="science" className="mt-0.5 text-[16px]" />
+    <div className="flex items-start gap-space-sm border-b border-critical-border bg-critical-bg px-space-md py-2 text-body-sm text-critical-fg">
+      <Icon name="error" className="mt-0.5 text-[16px]" />
       <span>
-        <strong className="font-semibold">Mock AI mode.</strong> The provider is deterministic and produces
-        reproducible marks for demonstration. {children}
+        <strong className="font-semibold">Local AI unavailable.</strong>{" "}
+        {detail ?? "Start the local Ollama service to process answer sheets."} {children}
       </span>
     </div>
   );

@@ -31,8 +31,42 @@ class EvaluationValidation:
         return not self.is_valid or bool(self.result.flags) or self.result.confidence < settings.ai_confidence_medium
 
 
+def _clean_region(region: dict) -> dict | None:
+    """Normalise one bounding box to 0-1 x0/y0/x1/y1. Returns None if unusable."""
+    try:
+        x0 = float(region.get("x0", 0.0))
+        y0 = float(region.get("y0", 0.0))
+        x1 = float(region.get("x1", 1.0))
+        y1 = float(region.get("y1", 1.0))
+    except (TypeError, ValueError):
+        return None
+    x0, x1 = sorted((max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))))
+    y0, y1 = sorted((max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))))
+    if x1 - x0 <= 0 or y1 - y0 <= 0:
+        return None
+    out = {
+        "text": str(region.get("text", "")),
+        "x0": x0,
+        "y0": y0,
+        "x1": x1,
+        "y1": y1,
+    }
+    conf = region.get("confidence")
+    if conf is not None:
+        try:
+            out["confidence"] = max(0.0, min(1.0, float(conf)))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+
 def validate_ocr(result: OCRPageResult) -> OCRPageResult:
-    """Clamp OCR confidence and normalise region coordinates."""
+    """Clamp OCR confidence and normalise region coordinates.
+
+    Structure reported by the model (detected answers, diagrams, unreadable
+    regions) is normalised the same way as page regions; anything unusable is
+    dropped rather than repaired with invented geometry.
+    """
     confidence = result.confidence
     if confidence is None:
         confidence = 0.0
@@ -40,20 +74,60 @@ def validate_ocr(result: OCRPageResult) -> OCRPageResult:
 
     clean_regions: list[dict] = []
     for region in result.regions or []:
-        try:
-            x0 = float(region.get("x0", 0.0))
-            y0 = float(region.get("y0", 0.0))
-            x1 = float(region.get("x1", 1.0))
-            y1 = float(region.get("y1", 1.0))
-        except (TypeError, ValueError):
-            continue
-        x0, x1 = sorted((max(0.0, min(1.0, x0)), max(0.0, min(1.0, x1))))
-        y0, y1 = sorted((max(0.0, min(1.0, y0)), max(0.0, min(1.0, y1))))
-        if x1 - x0 <= 0 or y1 - y0 <= 0:
-            continue
-        clean_regions.append({"text": str(region.get("text", "")), "x0": x0, "y0": y0, "x1": x1, "y1": y1})
+        cleaned = _clean_region(region)
+        if cleaned is not None:
+            clean_regions.append(cleaned)
 
-    return replace(result, confidence=confidence, regions=clean_regions)
+    clean_answers: list[dict] = []
+    for answer in result.detected_answers or []:
+        entry = dict(answer)
+        entry["regions"] = [
+            cleaned
+            for r in (answer.get("regions") or [])
+            if (cleaned := _clean_region(r)) is not None
+        ]
+        answer_conf = entry.get("confidence")
+        if answer_conf is None:
+            entry["confidence"] = confidence
+        else:
+            try:
+                entry["confidence"] = max(0.0, min(1.0, float(answer_conf)))
+            except (TypeError, ValueError):
+                entry["confidence"] = confidence
+        entry["transcription"] = str(entry.get("transcription") or "")
+        entry["question_number"] = str(entry.get("question_number") or "").strip()
+        entry["uncertain_segments"] = [
+            str(s) for s in (entry.get("uncertain_segments") or []) if str(s).strip()
+        ]
+        clean_answers.append(entry)
+
+    clean_diagrams: list[dict] = []
+    for diagram in result.diagrams or []:
+        entry = dict(diagram)
+        region = entry.get("region")
+        if isinstance(region, dict):
+            cleaned = _clean_region(region)
+            entry["region"] = cleaned
+        clean_diagrams.append(entry)
+
+    clean_unreadable: list[dict] = []
+    for item in result.unreadable_regions or []:
+        entry = dict(item)
+        region = entry.get("region")
+        if isinstance(region, dict):
+            cleaned = _clean_region(region)
+            entry["region"] = cleaned
+        clean_unreadable.append(entry)
+
+    return replace(
+        result,
+        confidence=confidence,
+        regions=clean_regions,
+        detected_answers=clean_answers,
+        diagrams=clean_diagrams,
+        unreadable_regions=clean_unreadable,
+        manual_review_required=bool(result.manual_review_required),
+    )
 
 
 def validate_evaluation(

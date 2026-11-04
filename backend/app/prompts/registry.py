@@ -18,10 +18,11 @@ from app.prompts.answer_evaluation import (
     theory_v1,
 )
 from app.prompts.answer_evaluation.common import ENGINE_VERSION
-from app.prompts.ocr import handwriting_v1
+from app.prompts.ocr import handwriting_v1, handwriting_v2
 
 _OCR_PROMPTS: dict[str, ModuleType] = {
     handwriting_v1.PROMPT_VERSION: handwriting_v1,
+    handwriting_v2.PROMPT_VERSION: handwriting_v2,
 }
 
 _EVAL_PROMPTS: dict[str, ModuleType] = {
@@ -31,7 +32,7 @@ _EVAL_PROMPTS: dict[str, ModuleType] = {
     diagram_v1.FAMILY: diagram_v1,
 }
 
-CURRENT_OCR_PROMPT_VERSION = handwriting_v1.PROMPT_VERSION
+CURRENT_OCR_PROMPT_VERSION = handwriting_v2.PROMPT_VERSION
 CURRENT_ENGINE_VERSION = ENGINE_VERSION
 
 

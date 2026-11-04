@@ -19,6 +19,32 @@ from app.storage import storage_health
 router = APIRouter(tags=["system"])
 
 
+def _ai_payload(provider, raw: dict) -> dict:
+    """Normalise any provider's health() into the shape the UI consumes."""
+    payload = dict(raw)
+    payload.setdefault("provider", getattr(provider, "name", "unknown"))
+    payload.setdefault("model", getattr(provider, "model", ""))
+    payload.setdefault("is_mock", bool(getattr(provider, "is_mock", False)))
+    payload.setdefault(
+        "display_name",
+        payload.get("display_name")
+        or (f"{payload['model']} · Local" if payload["model"] else payload["provider"]),
+    )
+    if "status" not in payload:
+        payload["status"] = "ok" if payload.get("ok") else "unavailable"
+    payload.setdefault(
+        "detail",
+        "Local inference ready."
+        if payload["status"] == "ok"
+        else "The configured AI provider reported a problem.",
+    )
+    payload.setdefault("available", payload["status"] == "ok")
+    payload.setdefault("model_installed", payload["status"] != "model_missing")
+    payload.setdefault("ocr_enabled", settings.ocr_enabled)
+    payload.setdefault("evaluation_enabled", settings.evaluation_enabled)
+    return payload
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(db: DbSession) -> HealthResponse:
     """Liveness + dependency status. Safe to expose: contains no secrets."""
@@ -29,7 +55,7 @@ async def health(db: DbSession) -> HealthResponse:
         db_status = f"error: {type(exc).__name__}"
 
     provider = get_provider()
-    ai = await provider.health()
+    ai = _ai_payload(provider, await provider.health())
     storage = await storage_health()
 
     return HealthResponse(
@@ -48,14 +74,22 @@ async def health(db: DbSession) -> HealthResponse:
 async def get_settings(user: CurrentUser) -> dict:
     """Runtime configuration surfaced to the Settings screen (no secrets)."""
     provider = get_provider()
+    ai = _ai_payload(provider, await provider.health())
     return {
         "app_name": settings.app_name,
         "environment": settings.environment,
         "version": __version__,
         "ai": {
-            "provider": provider.name,
-            "model": provider.model,
-            "is_mock": provider.is_mock,
+            "provider": ai["provider"],
+            "model": ai["model"],
+            "display_name": ai["display_name"],
+            "is_mock": ai["is_mock"],
+            "status": ai["status"],
+            "detail": ai["detail"],
+            "available": ai["available"],
+            "model_installed": ai["model_installed"],
+            "ocr_enabled": ai["ocr_enabled"],
+            "evaluation_enabled": ai["evaluation_enabled"],
             "confidence_high": settings.ai_confidence_high,
             "confidence_medium": settings.ai_confidence_medium,
         },

@@ -74,12 +74,44 @@ export function SettingsPage() {
                 label="AI provider"
                 value={
                   <span className="flex items-center gap-space-xs">
-                    <StatusBadge tone={settings.ai.is_mock ? "review" : "verified"} label={settings.ai.is_mock ? "Mock" : "Live"} />
+                    <StatusBadge
+                      tone={
+                        settings.ai.status === "ok"
+                          ? "verified"
+                          : settings.ai.status === "model_missing"
+                            ? "critical"
+                            : "review"
+                      }
+                      label={
+                        settings.ai.status === "ok"
+                          ? "Available"
+                          : settings.ai.status === "model_missing"
+                            ? "Model missing"
+                            : "Unavailable"
+                      }
+                    />
                     <span className="font-mono">{settings.ai.provider}</span>
                   </span>
                 }
               />
-              <Row label="Model" value={<span className="font-mono">{settings.ai.model || "—"}</span>} />
+              <Row
+                label="Model"
+                value={
+                  <span className="flex flex-col gap-0.5">
+                    <span>{settings.ai.display_name}</span>
+                    <span className="font-mono text-[11px] text-outline">{settings.ai.model || "—"}</span>
+                  </span>
+                }
+              />
+              <Row
+                label="Capabilities"
+                value={
+                  <span className="font-mono">
+                    OCR {settings.ai.ocr_enabled ? "on" : "off"} · evaluation{" "}
+                    {settings.ai.evaluation_enabled ? "on" : "off"}
+                  </span>
+                }
+              />
               <Row
                 label="Confidence thresholds"
                 value={
@@ -101,11 +133,20 @@ export function SettingsPage() {
           ) : (
             <p className="p-space-md  text-body-sm text-critical-fg">{errorText(settingsQuery.error)}</p>
           )}
-          {settings?.ai.is_mock ? (
-            <p className="m-space-md mt-0 flex items-start gap-space-sm rounded border border-review-border bg-review-bg px-space-sm py-2  text-body-sm text-review-fg">
-              <Icon name="science" className="text-[16px]" />
-              The mock provider returns deterministic results. Set <span className="font-mono">AI_PROVIDER</span> and{" "}
-              <span className="font-mono">AI_API_KEY</span> in the environment to evaluate with a real model.
+          {settings && settings.ai.status !== "ok" ? (
+            <p className="m-space-md mt-0 flex items-start gap-space-sm rounded border border-critical-border bg-critical-bg px-space-sm py-2  text-body-sm text-critical-fg">
+              <Icon name="error" className="text-[16px]" />
+              <span>
+                {settings.ai.detail}{" "}
+                {settings.ai.status === "model_missing" ? (
+                  <span className="font-mono">ollama pull {settings.ai.model}</span>
+                ) : null}
+              </span>
+            </p>
+          ) : settings ? (
+            <p className="m-space-md mt-0 flex items-start gap-space-sm rounded border border-outline-variant bg-surface-container-lowest px-space-sm py-2  text-body-sm text-on-surface-variant">
+              <Icon name="verified" className="text-[16px]" />
+              {settings.ai.detail}
             </p>
           ) : null}
         </section>

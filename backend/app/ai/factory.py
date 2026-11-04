@@ -1,10 +1,16 @@
-"""Provider factory — the only place that knows which provider is configured."""
+"""Provider factory — the only place that knows which provider is configured.
+
+CheckR's production workflow runs on the local Ollama provider. The ``mock``
+provider exists only for the test suite and the development seed: it must be
+requested *explicitly* (``AI_PROVIDER=mock``). An unknown provider name is a
+configuration error — it never degrades into mock results.
+"""
 
 from __future__ import annotations
 
 from functools import lru_cache
 
-from app.ai.base import AIProvider
+from app.ai.base import AIProvider, AIProviderError
 from app.core.config import settings
 from app.core.logging import get_logger
 
@@ -16,9 +22,15 @@ def build_provider(name: str | None = None) -> AIProvider:
 
     Imported lazily so an unused provider never pulls in its HTTP client.
     """
-    provider = (name or settings.ai_provider or "mock").lower()
+    provider = (name or settings.ai_provider or "ollama").lower()
+
+    if provider == "ollama":
+        from app.ai.ollama import OllamaProvider
+
+        return OllamaProvider()
 
     if provider == "mock":
+        # Explicit opt-in only: tests and the deterministic development seed.
         from app.ai.mock import MockProvider
 
         return MockProvider()
@@ -43,10 +55,13 @@ def build_provider(name: str | None = None) -> AIProvider:
 
         return LocalVisionProvider()
 
-    logger.warning("Unknown AI provider %r; falling back to mock.", provider)
-    from app.ai.mock import MockProvider
-
-    return MockProvider()
+    # Never fall back to mock: fabricated results are worse than a clear error.
+    raise AIProviderError(
+        f"Unknown AI provider {provider!r}. Set AI_PROVIDER to one of: "
+        "ollama, local, gemini, openai, anthropic (mock is for tests only).",
+        retryable=False,
+        kind="config",
+    )
 
 
 @lru_cache

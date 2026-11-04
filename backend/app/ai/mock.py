@@ -98,6 +98,7 @@ class MockProvider:
         *,
         page_number: int,
         prompt_version: str = "handwriting_v1",
+        previous_context: str | None = None,
     ) -> OCRPageResult:
         if not image_bytes:
             raise AIProviderError("Empty page image supplied to OCR.", retryable=False)

@@ -38,7 +38,9 @@ def extract_json(text: str) -> dict[str, Any]:
     We never "repair" broken JSON into fabricated values — we raise instead.
     """
     if not text or not text.strip():
-        raise AIProviderError("Model returned an empty response.", retryable=True)
+        raise AIProviderError(
+            "Model returned an empty response.", retryable=True, kind="bad_response"
+        )
 
     candidate = text.strip()
 
@@ -55,11 +57,15 @@ def extract_json(text: str) -> dict[str, Any]:
         parsed = json.loads(candidate)
     except json.JSONDecodeError as exc:
         raise AIProviderError(
-            f"Model response was not valid JSON: {exc.msg}", retryable=True
+            f"Model response was not valid JSON: {exc.msg}",
+            retryable=True,
+            kind="bad_response",
         ) from exc
 
     if not isinstance(parsed, dict):
-        raise AIProviderError("Model response JSON was not an object.", retryable=True)
+        raise AIProviderError(
+            "Model response JSON was not an object.", retryable=True, kind="bad_response"
+        )
     return parsed
 
 

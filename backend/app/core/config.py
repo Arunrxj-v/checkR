@@ -16,7 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent  # backend/
 
-AIProviderName = Literal["mock", "gemini", "openai", "anthropic", "local"]
+AIProviderName = Literal["mock", "ollama", "gemini", "openai", "anthropic", "local"]
 StorageProviderName = Literal["local", "s3"]
 Environment = Literal["development", "production", "test"]
 
@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     expose_demo_credentials: bool | None = None
 
     # --- AI ---
-    ai_provider: AIProviderName = "mock"
+    # CheckR runs entirely on local inference: Ollama is the only runtime used
+    # by the application workflow. ``mock`` exists for the test suite and the
+    # development seed only; it is never selected implicitly.
+    ai_provider: AIProviderName = "ollama"
     ai_api_key: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
@@ -70,6 +73,21 @@ class Settings(BaseSettings):
     ai_max_retries: int = 2
     ai_confidence_high: float = 0.85
     ai_confidence_medium: float = 0.60
+
+    # --- Ollama (local inference runtime) ---
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "gemma3:4b"
+    ollama_request_timeout: int = 300
+    ollama_max_retries: int = 2
+    #: How long Ollama keeps the model resident between requests. Short enough
+    #: to release memory on an 8 GB machine, long enough to avoid reloads while
+    #: a batch of pages is processed.
+    ollama_keep_alive: str = "10m"
+
+    # Capability switches. Both default on; disabling either makes the
+    # pipeline report the disabled capability explicitly instead of guessing.
+    ocr_enabled: bool = True
+    evaluation_enabled: bool = True
 
     # --- Storage ---
     storage_provider: StorageProviderName = "local"
@@ -149,8 +167,14 @@ class Settings(BaseSettings):
             out.append(
                 "JWT_SECRET is weak or default. Set a long random value before production."
             )
-        if self.is_production and self.ai_provider != "mock" and not self.ai_api_key:
+        if (
+            self.is_production
+            and self.ai_provider not in ("mock", "ollama", "local")
+            and not self.ai_api_key
+        ):
             out.append(f"AI_PROVIDER={self.ai_provider} but AI_API_KEY is empty.")
+        if self.ai_provider == "ollama" and not self.ollama_model:
+            out.append("AI_PROVIDER=ollama but OLLAMA_MODEL is empty.")
         if self.is_production and self.storage_provider == "s3" and not self.s3_bucket:
             out.append("STORAGE_PROVIDER=s3 but S3_BUCKET is empty.")
         if self.is_production and self.expose_demo_credentials:

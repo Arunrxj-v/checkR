@@ -1,8 +1,9 @@
 """The AI provider contract.
 
 Any provider must implement this protocol. The rest of the application depends
-only on this interface, so swapping mock -> Gemini -> OpenAI is a configuration
-change, never a code change.
+only on this interface, so swapping providers is a configuration change, never
+a code change. CheckR's production workflow runs on the local Ollama provider
+(``AI_PROVIDER=ollama``).
 """
 
 from __future__ import annotations
@@ -26,8 +27,13 @@ class AIProvider(Protocol):
         *,
         page_number: int,
         prompt_version: str = "handwriting_v1",
+        previous_context: str | None = None,
     ) -> OCRPageResult:
-        """Convert a handwritten page image into text (+ confidence/regions)."""
+        """Convert a handwritten page image into text (+ confidence/regions).
+
+        ``previous_context`` carries the tail of the previous page's
+        transcription so multi-page answers can be recognised as continuations.
+        """
         ...
 
     async def evaluate_answer(
@@ -49,8 +55,20 @@ class AIProvider(Protocol):
 
 
 class AIProviderError(Exception):
-    """Raised when a provider fails irrecoverably (bad key, timeout, bad payload)."""
+    """Raised when a provider fails irrecoverably (bad key, timeout, bad payload).
 
-    def __init__(self, message: str, *, retryable: bool = True) -> None:
+    ``kind`` classifies the failure so callers can surface an actionable
+    message instead of a generic one:
+
+    * ``unavailable``    — the inference runtime cannot be reached
+    * ``model_missing``  — the configured model is not installed
+    * ``timeout``        — the request exceeded the configured timeout
+    * ``bad_response``   — the model returned unusable output (after retries)
+    * ``config``         — a configuration problem (missing key, disabled, …)
+    * ``""``             — uncategorised
+    """
+
+    def __init__(self, message: str, *, retryable: bool = True, kind: str = "") -> None:
         super().__init__(message)
         self.retryable = retryable
+        self.kind = kind
