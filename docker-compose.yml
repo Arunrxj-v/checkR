@@ -87,6 +87,10 @@ services:
       DATABASE_URL_SYNC: postgresql+psycopg://checkr:checkr@postgres:5432/checkr
       REDIS_URL: redis://redis:6379/0
       STORAGE_PATH: /data/storage
+      # Inside the container `localhost` is the container itself, so point at
+      # the host's Ollama. Compose `environment` overrides `env_file`, which
+      # keeps `.env`'s `http://localhost:11434` correct for native runs.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     ports:
       - "${BACKEND_HOST_PORT:-8000}:8000"
     volumes:
@@ -113,6 +117,9 @@ services:
       DATABASE_URL_SYNC: postgresql+psycopg://checkr:checkr@postgres:5432/checkr
       REDIS_URL: redis://redis:6379/0
       STORAGE_PATH: /data/storage
+      # See the backend service: the worker runs OCR/evaluation against the
+      # host's Ollama, not the container's own localhost.
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
     volumes:
       - ./backend:/app
       - checkr_storage:/data/storage

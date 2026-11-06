@@ -42,18 +42,20 @@ async def lifespan(app: FastAPI):
         from app.ai.factory import get_provider
 
         ai_status = await get_provider().health()
-        if ai_status.get("ok"):
+        status = str(ai_status.get("status", "unknown"))
+        if status in ("ready", "connected"):
             logger.info(
-                "AI ready: %s (%s, provider=%s) — %s",
+                "AI %s: %s (provider=%s, model=%s) — %s",
+                status,
                 ai_status.get("display_name", ai_status.get("model")),
-                ai_status.get("model"),
                 ai_status.get("provider"),
+                ai_status.get("model"),
                 ai_status.get("detail", ""),
             )
         else:
             logger.warning(
                 "AI not ready (%s): %s",
-                ai_status.get("status", "unknown"),
+                status,
                 ai_status.get("detail", "Unknown AI problem."),
             )
     except Exception as exc:  # never block startup on a status probe

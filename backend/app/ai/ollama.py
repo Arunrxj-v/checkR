@@ -28,6 +28,7 @@ import asyncio
 import re
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 import httpx
@@ -54,6 +55,20 @@ AVAILABILITY_TTL = 15.0
 #: Timeout used for the cheap /api/tags probe (never the inference timeout).
 PROBE_TIMEOUT = 5.0
 
+#: Health states, shared with the Settings API and the UI. Ordered from
+#: "cannot serve" to "verified working"; see :meth:`OllamaProvider.health`.
+STATUS_UNAVAILABLE = "unavailable"        # Ollama cannot be reached
+STATUS_ERROR = "error"                    # Ollama answered unexpectedly (HTTP/parse)
+STATUS_MODEL_NOT_INSTALLED = "model_not_installed"
+STATUS_CONNECTED = "connected"            # reachable + installed, inference unverified
+STATUS_MODEL_LOADING = "model_loading"    # an inference request is in flight
+STATUS_READY = "ready"                    # a real inference request has succeeded
+STATUS_INFERENCE_ERROR = "inference_error"  # installed, but inference failed
+
+#: How long a verified (or failed) inference result may be reused by the cheap
+#: health endpoints before Settings runs a fresh model check.
+INFERENCE_TTL = 60.0
+
 UNAVAILABLE_MESSAGE = (
     "Ollama is unavailable. Start the local Ollama service to process answer sheets."
 )
@@ -76,6 +91,27 @@ def _model_installed(names: list[str], model: str) -> bool:
     if ":" not in model:
         return f"{model}:latest" in names
     return False
+
+
+def _vision_capable(model_entry: dict) -> bool:
+    """Whether a model entry from ``/api/tags`` accepts image input.
+
+    Uses the explicit ``capabilities`` list (Ollama >= 0.5) and falls back to
+    the GGUF ``families`` list (``clip`` is the vision projector family).
+    ``False`` when neither is present: OCR availability is never assumed.
+    """
+    caps = model_entry.get("capabilities")
+    if isinstance(caps, list) and caps:
+        return "vision" in [str(c).lower() for c in caps]
+    details = model_entry.get("details")
+    families = details.get("families") if isinstance(details, dict) else None
+    if isinstance(families, list) and families:
+        return "clip" in [str(f).lower() for f in families]
+    return False
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 class OllamaProvider:
@@ -106,14 +142,24 @@ class OllamaProvider:
             transport=transport,
         )
         self._availability_cache: tuple[float, dict[str, Any]] | None = None
+        #: Last verified inference result (``status``/``inference_ok``/…) and
+        #: when it was obtained; ``None`` until a real request has succeeded.
+        self._inference_result: dict[str, Any] | None = None
+        self._inference_at: float = 0.0
+        #: True while a probe inference is in flight (-> ``model_loading``).
+        self._probe_in_flight = False
 
     # ------------------------------------------------------------------ #
-    # Connectivity / model availability
+    # Connectivity / model availability (cheap: /api/tags + /api/ps)
     # ------------------------------------------------------------------ #
     async def availability(
         self, *, refresh: bool = False, probe_timeout: float = PROBE_TIMEOUT
     ) -> dict[str, Any]:
-        """Check Ollama reachability and model installation (TTL-cached)."""
+        """Check Ollama reachability, model installation and load state.
+
+        TTL-cached so health endpoints do not hammer the server; ``refresh``
+        forces a fresh probe (used by the processing preflight).
+        """
         if not refresh and self._availability_cache is not None:
             cached_at, cached = self._availability_cache
             if time.monotonic() - cached_at < AVAILABILITY_TTL:
@@ -130,73 +176,275 @@ class OllamaProvider:
             )
         except httpx.TimeoutException:
             return self._status(
-                "unavailable",
+                STATUS_UNAVAILABLE,
                 f"Ollama did not respond within {probe_timeout:g}s at {self.base_url}. "
                 + UNAVAILABLE_MESSAGE,
             )
         except httpx.HTTPError as exc:
             return self._status(
-                "unavailable", f"{UNAVAILABLE_MESSAGE} ({type(exc).__name__})."
+                STATUS_UNAVAILABLE, f"{UNAVAILABLE_MESSAGE} ({type(exc).__name__})."
             )
 
         if resp.status_code >= 400:
             return self._status(
-                "unavailable",
+                STATUS_ERROR,
                 f"Ollama returned HTTP {resp.status_code} at {self.base_url}. "
                 + UNAVAILABLE_MESSAGE,
             )
 
         try:
-            names = [str(m.get("name", "")) for m in resp.json().get("models", [])]
+            models = resp.json().get("models", [])
+            names = [str(m.get("name", "")) for m in models]
         except (ValueError, AttributeError, TypeError):
             return self._status(
-                "unavailable",
+                STATUS_ERROR,
                 f"Ollama returned an unreadable model list. {UNAVAILABLE_MESSAGE}",
             )
 
         if not _model_installed(names, self.model):
             return self._status(
-                "model_missing",
+                STATUS_MODEL_NOT_INSTALLED,
                 f"{self.model} is not installed. Run: ollama pull {self.model}",
+                model_installed=False,
             )
+
+        entry = next(
+            (m for m in models if _model_installed([str(m.get("name", ""))], self.model)),
+            {},
+        )
+        vision = _vision_capable(entry if isinstance(entry, dict) else {})
+
+        # Is the model already resident? Best-effort: a failing /api/ps must not
+        # turn a healthy server into an error.
+        loaded: bool | None = None
+        try:
+            ps = await self._client.get(f"{self.base_url}/api/ps", timeout=probe_timeout)
+            if ps.status_code < 400:
+                running = [str(m.get("name", "")) for m in ps.json().get("models", [])]
+                loaded = _model_installed(running, self.model)
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+            loaded = None
+
+        detail = f"Ollama reachable at {self.base_url}; {self.model} installed."
+        if loaded:
+            detail += " Model is loaded in memory."
         return self._status(
-            "ok", f"Ollama reachable; {self.model} installed at {self.base_url}."
+            STATUS_CONNECTED,
+            detail,
+            model_installed=True,
+            model_loaded=loaded,
+            vision_capable=vision,
         )
 
     @staticmethod
-    def _status(status: str, detail: str) -> dict[str, Any]:
+    def _status(status: str, detail: str, **extra: Any) -> dict[str, Any]:
+        connected = status == STATUS_CONNECTED
         return {
             "status": status,
-            "ok": status == "ok",
-            "available": status == "ok",
-            "model_installed": status != "model_missing",
+            "ok": connected,
+            "connected": connected,
+            "available": connected,
+            # Unknown until proven: an unreachable server tells us nothing
+            # about what is installed.
+            "model_installed": extra.get(
+                "model_installed", False if status == STATUS_MODEL_NOT_INSTALLED else None
+            ),
+            "model_loaded": extra.get("model_loaded"),
+            "vision_capable": extra.get("vision_capable"),
+            "detail": detail,
+            "checked_at": _now_iso(),
+        }
+
+    # ------------------------------------------------------------------ #
+    # Real inference check: one tiny generation request
+    # ------------------------------------------------------------------ #
+    async def probe_inference(
+        self, *, force: bool = False, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """Send an actual inference request and report whether it succeeded.
+
+        This is the only way the application claims ``ready``: no request, no
+        success. Results are reused for ``OLLAMA_INFERENCE_TTL`` seconds so a
+        page reload does not re-load the model; ``force`` bypasses the cache.
+        """
+        now = time.monotonic()
+        if (
+            not force
+            and self._inference_result is not None
+            and now - self._inference_at < settings.ollama_inference_ttl
+        ):
+            return dict(self._inference_result)
+
+        if self._probe_in_flight:
+            return {
+                "status": STATUS_MODEL_LOADING,
+                "ok": False,
+                "connected": True,
+                "inference_ok": None,
+                "detail": (
+                    f"{self.model} is loading into memory; the model check is "
+                    "already running — retry in a moment."
+                ),
+            }
+
+        self._probe_in_flight = True
+        started = time.monotonic()
+        try:
+            request_timeout = timeout or settings.ollama_probe_timeout
+            try:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/chat",
+                    json={
+                        "model": self.model,
+                        "messages": [
+                            {"role": "user", "content": "Reply with the single word OK."}
+                        ],
+                        "stream": False,
+                        "options": {"num_predict": 4},
+                        "keep_alive": settings.ollama_keep_alive,
+                    },
+                    timeout=request_timeout,
+                )
+            except httpx.TimeoutException:
+                result = self._inference_failure(
+                    f"{self.model} did not complete inference within "
+                    f"{request_timeout:g}s (it may still be loading). Increase "
+                    "OLLAMA_PROBE_TIMEOUT or free system memory."
+                )
+            except httpx.HTTPError as exc:
+                result = self._inference_failure(
+                    f"Inference request failed ({type(exc).__name__}). "
+                    + UNAVAILABLE_MESSAGE
+                )
+            else:
+                if resp.status_code >= 400:
+                    result = self._inference_failure(
+                        f"Inference returned HTTP {resp.status_code}: "
+                        f"{resp.text[:200]}"
+                    )
+                else:
+                    try:
+                        content = str(resp.json()["message"]["content"] or "")
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        content = ""
+                    if content.strip():
+                        elapsed_ms = int((time.monotonic() - started) * 1000)
+                        result = {
+                            "status": STATUS_READY,
+                            "ok": True,
+                            "connected": True,
+                            "inference_ok": True,
+                            "inference_ms": elapsed_ms,
+                            "detail": (
+                                f"Real inference verified: {self.model} responded "
+                                f"in {elapsed_ms} ms."
+                            ),
+                        }
+                    else:
+                        result = self._inference_failure(
+                            "The model returned an empty response to a real "
+                            "inference request."
+                        )
+
+            result["inference_checked_at"] = _now_iso()
+            self._inference_result = result
+            self._inference_at = time.monotonic()
+            return dict(result)
+        finally:
+            self._probe_in_flight = False
+
+    def _inference_failure(self, detail: str) -> dict[str, Any]:
+        return {
+            "status": STATUS_INFERENCE_ERROR,
+            "ok": False,
+            "connected": True,
+            "inference_ok": False,
             "detail": detail,
         }
 
+    # ------------------------------------------------------------------ #
+    # Combined status for the Settings/health endpoints
+    # ------------------------------------------------------------------ #
     async def health(self) -> dict[str, Any]:
-        """Settings/health payload — never raises, never blocks for long."""
+        """Real status of the local runtime — never inferred from existence.
+
+        Cheap (cached tags probe); reports ``ready`` only when an actual
+        inference request has succeeded recently, otherwise ``connected``
+        (reachable but unverified) or one of the failure states.
+        """
         state = await self.availability()
-        return {
+        payload: dict[str, Any] = {
             "provider": self.name,
             "model": self.model,
             "display_name": self.display_name,
             "is_mock": False,
-            "ok": bool(state["ok"]),
-            "status": state["status"],
-            "detail": state["detail"],
-            "available": bool(state["available"]),
-            "model_installed": bool(state["model_installed"]),
             "base_url": self.base_url,
             "ocr_enabled": settings.ocr_enabled,
             "evaluation_enabled": settings.evaluation_enabled,
+            "status": state["status"],
+            "ok": bool(state["ok"]),
+            "connected": bool(state.get("connected")),
+            "available": bool(state.get("available")),
+            "model_installed": state.get("model_installed"),
+            "model_loaded": state.get("model_loaded"),
+            "vision_capable": state.get("vision_capable"),
+            # Tri-state: None until a real inference request has been made.
+            "inference_ok": None,
+            "inference_ms": None,
+            "inference_checked_at": None,
+            "checked_at": state.get("checked_at"),
+            "detail": state["detail"],
         }
+        if payload["status"] in (
+            STATUS_UNAVAILABLE,
+            STATUS_ERROR,
+            STATUS_MODEL_NOT_INSTALLED,
+        ):
+            payload["ok"] = False
+            payload["available"] = False
+            return payload
+
+        # Reachable and installed from here on.
+        if self._probe_in_flight:
+            payload.update(
+                status=STATUS_MODEL_LOADING,
+                ok=False,
+                detail=f"{self.model} is loading into memory…",
+            )
+            return payload
+
+        if (
+            self._inference_result is not None
+            and time.monotonic() - self._inference_at < settings.ollama_inference_ttl
+        ):
+            payload.update(self._inference_result)
+            # A failed inference means the runtime cannot serve work right now,
+            # even though the server itself is reachable.
+            payload["available"] = bool(payload["ok"])
+            return payload
+
+        payload.update(
+            status=STATUS_CONNECTED,
+            ok=True,
+            detail=(
+                f"Ollama reachable and {self.model} installed. Inference has "
+                "not been verified yet — the Settings screen runs a real model "
+                "check."
+            ),
+        )
+        if self._inference_result is not None:
+            payload["inference_ok"] = self._inference_result.get("inference_ok")
+            payload["inference_checked_at"] = self._inference_result.get(
+                "inference_checked_at"
+            )
+        return payload
 
     async def require_available(self) -> None:
         """Raise an actionable error when inference cannot run right now."""
         state = await self.availability(refresh=True)
-        if state["status"] == "unavailable":
+        if state["status"] in (STATUS_UNAVAILABLE, STATUS_ERROR):
             raise AIProviderError(state["detail"], retryable=True, kind="unavailable")
-        if state["status"] == "model_missing":
+        if state["status"] == STATUS_MODEL_NOT_INSTALLED:
             raise AIProviderError(state["detail"], retryable=False, kind="model_missing")
 
     # ------------------------------------------------------------------ #

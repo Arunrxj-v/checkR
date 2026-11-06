@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     ollama_model: str = "gemma3:4b"
     ollama_request_timeout: int = 300
     ollama_max_retries: int = 2
+    #: Timeout for the Settings "model check" — a real (tiny) inference request
+    #: that also pays the one-off cost of loading the model into memory.
+    ollama_probe_timeout: int = 90
+    #: How long a verified inference result may be reused by health checks
+    #: before Settings runs a fresh one.
+    ollama_inference_ttl: int = 60
     #: How long Ollama keeps the model resident between requests. Short enough
     #: to release memory on an 8 GB machine, long enough to avoid reloads while
     #: a batch of pages is processed.
@@ -169,10 +175,16 @@ class Settings(BaseSettings):
             )
         if (
             self.is_production
-            and self.ai_provider not in ("mock", "ollama", "local")
+            and self.ai_provider not in ("ollama", "local")
             and not self.ai_api_key
         ):
             out.append(f"AI_PROVIDER={self.ai_provider} but AI_API_KEY is empty.")
+        if self.ai_provider == "mock" and not self.is_testing:
+            out.append(
+                "AI_PROVIDER=mock is only allowed in the test suite "
+                "(ENVIRONMENT=test). The application will refuse to start the "
+                "mock provider for real submissions."
+            )
         if self.ai_provider == "ollama" and not self.ollama_model:
             out.append("AI_PROVIDER=ollama but OLLAMA_MODEL is empty.")
         if self.is_production and self.storage_provider == "s3" and not self.s3_bucket:

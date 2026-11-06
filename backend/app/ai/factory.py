@@ -1,9 +1,10 @@
 """Provider factory — the only place that knows which provider is configured.
 
 CheckR's production workflow runs on the local Ollama provider. The ``mock``
-provider exists only for the test suite and the development seed: it must be
-requested *explicitly* (``AI_PROVIDER=mock``). An unknown provider name is a
-configuration error — it never degrades into mock results.
+provider exists for the test suite only: it must be requested explicitly
+(``AI_PROVIDER=mock``) **and** run with ``ENVIRONMENT=test``. Any other
+provider name — or mock outside the tests — is a configuration error; it never
+degrades into mock results.
 """
 
 from __future__ import annotations
@@ -30,7 +31,17 @@ def build_provider(name: str | None = None) -> AIProvider:
         return OllamaProvider()
 
     if provider == "mock":
-        # Explicit opt-in only: tests and the deterministic development seed.
+        # The deterministic mock exists for the test suite only. Real
+        # submissions (development or production) must never run on fabricated
+        # results, so selecting it outside ENVIRONMENT=test is a hard error.
+        if not settings.is_testing:
+            raise AIProviderError(
+                "AI_PROVIDER=mock is only allowed in the test suite "
+                "(ENVIRONMENT=test). Set AI_PROVIDER=ollama to run real local "
+                "inference with Ollama.",
+                retryable=False,
+                kind="config",
+            )
         from app.ai.mock import MockProvider
 
         return MockProvider()

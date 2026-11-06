@@ -32,10 +32,17 @@ def make_provider(handler, **kwargs) -> OllamaProvider:
     return OllamaProvider(transport=httpx.MockTransport(handler), **kwargs)
 
 
-def tags_response(models: list[str]) -> httpx.Response:
-    return httpx.Response(
-        200, json={"models": [{"name": name, "model": name} for name in models]}
-    )
+def tags_response(models: list[str], *, vision: bool = True) -> httpx.Response:
+    entries = [
+        {
+            "name": name,
+            "model": name,
+            "capabilities": ["completion", "vision"] if vision else ["completion"],
+            "details": {"families": ["gemma3", "clip"] if vision else ["gemma3"]},
+        }
+        for name in models
+    ]
+    return httpx.Response(200, json={"models": entries})
 
 
 def chat_response(content: str) -> httpx.Response:
@@ -125,7 +132,8 @@ def test_display_name_is_human_readable():
 # --------------------------------------------------------------------------- #
 # Availability: GET /api/tags
 # --------------------------------------------------------------------------- #
-async def test_health_ok_when_model_installed():
+async def test_health_connected_when_model_installed_but_unverified():
+    """Reachable + installed is `connected` — never `ready` without a probe."""
     provider = make_provider(lambda request: tags_response(["gemma3:4b"]))
     try:
         health = await provider.health()
@@ -133,11 +141,15 @@ async def test_health_ok_when_model_installed():
         await provider.aclose()
 
     assert health["ok"] is True
-    assert health["status"] == "ok"
+    assert health["status"] == "connected"
+    assert health["connected"] is True
     assert health["provider"] == "ollama"
     assert health["model"] == "gemma3:4b"
     assert health["display_name"] == "Gemma 3 4B · Local"
     assert health["is_mock"] is False
+    assert health["vision_capable"] is True
+    # No inference request has been made: success is never claimed.
+    assert health["inference_ok"] is None
     assert health["ocr_enabled"] is True
     assert health["evaluation_enabled"] is True
 
@@ -150,7 +162,7 @@ async def test_health_reports_missing_model_with_pull_command():
         await provider.aclose()
 
     assert health["ok"] is False
-    assert health["status"] == "model_missing"
+    assert health["status"] == "model_not_installed"
     assert health["model_installed"] is False
     assert "ollama pull gemma3:4b" in health["detail"]
 
@@ -172,19 +184,21 @@ async def test_health_reports_unavailable_when_ollama_is_down():
 
 
 async def test_availability_is_cached_between_probes():
-    calls = {"n": 0}
+    tags_calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls["n"] += 1
-        return tags_response(["gemma3:4b"])
+        if request.url.path == "/api/tags":
+            tags_calls["n"] += 1
+            return tags_response(["gemma3:4b"])
+        return httpx.Response(200, json={"models": []})  # /api/ps
 
     provider = make_provider(handler)
     try:
         await provider.availability()
         await provider.availability()
-        assert calls["n"] == 1
+        assert tags_calls["n"] == 1
         await provider.availability(refresh=True)
-        assert calls["n"] == 2
+        assert tags_calls["n"] == 2
     finally:
         await provider.aclose()
 
