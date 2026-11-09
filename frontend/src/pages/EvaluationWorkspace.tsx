@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import { useCrumbs } from "@/components/layout/AppShell";
@@ -250,6 +250,48 @@ export function EvaluationWorkspace() {
     },
     onError: (err) => notify("Could not re-evaluate", { tone: "critical", detail: errorText(err) }),
   });
+
+  // --- Examiner corrections (transcription + page mapping) ----------------- #
+  // The AI suggestion is never rewritten: correcting the transcription only
+  // changes what the examiner reads/finalises, and the original OCR output
+  // stays in the audit trail.
+  const [editingTranscript, setEditingTranscript] = useState(false);
+  const [transcriptDraft, setTranscriptDraft] = useState("");
+  const transcriptionMutation = useMutation({
+    mutationFn: (text: string) => answerApi.correctTranscription(activeAnswer!.id, text),
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: ["answer", updated.id] });
+      void queryClient.invalidateQueries({ queryKey: ["answers", submissionId] });
+      setEditingTranscript(false);
+      notify("Transcription corrected", { tone: "verified", detail: "The original AI output is kept for audit." });
+    },
+    onError: (err) => notify("Could not save transcription", { tone: "critical", detail: errorText(err) }),
+  });
+
+  const [editingPages, setEditingPages] = useState(false);
+  const [pagesDraft, setPagesDraft] = useState("");
+  const pagesMutation = useMutation({
+    mutationFn: (numbers: number[]) => answerApi.correctPages(activeAnswer!.id, numbers),
+    onSuccess: (updated) => {
+      void queryClient.invalidateQueries({ queryKey: ["answer", updated.id] });
+      void queryClient.invalidateQueries({ queryKey: ["answers", submissionId] });
+      setEditingPages(false);
+      notify("Page mapping corrected", { tone: "verified" });
+    },
+    onError: (err) => notify("Could not save page mapping", { tone: "critical", detail: errorText(err) }),
+  });
+
+  const savePages = useCallback(() => {
+    const numbers = pagesDraft
+      .split(/[\s,]+/)
+      .map((part) => Number(part))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (numbers.length === 0) {
+      notify("Enter at least one page number", { tone: "critical" });
+      return;
+    }
+    pagesMutation.mutate(numbers);
+  }, [pagesDraft, notify, pagesMutation]);
 
   const finalizeMutation = useMutation({
     mutationFn: () => resultApi.finalize(submissionId),
@@ -819,15 +861,77 @@ export function EvaluationWorkspace() {
                         Transcript — {detail.question_label ?? `Q${activeIndex + 1}`} · Page{" "}
                         {currentPage.page_number}
                       </span>
-                      <span className="font-mono text-[10px] text-outline">
+                      <span className="flex items-center gap-2 font-mono text-[10px] text-outline">
+                        {detail.ocr?.ocr_status ? (
+                          <span
+                            className={
+                              detail.ocr.ocr_status === "completed"
+                                ? "text-verified-fg"
+                                : detail.ocr.ocr_status === "unreadable"
+                                  ? "text-critical-fg"
+                                  : "text-review-fg"
+                            }
+                          >
+                            OCR {detail.ocr.ocr_status}
+                          </span>
+                        ) : null}
+                        {detail.ocr?.duration_ms != null ? (
+                          <span>{(detail.ocr.duration_ms / 1000).toFixed(1)}s</span>
+                        ) : null}
                         {detail.ocr_confidence !== null
                           ? `${formatConfidence(detail.ocr_confidence)} confidence`
                           : ""}
+                        <button
+                          type="button"
+                          className="rounded border border-outline-variant px-1.5 py-0.5 text-[10px] text-on-surface-variant transition-colors hover:bg-surface-container"
+                          onClick={() => {
+                            setTranscriptDraft(detail.transcription ?? "");
+                            setEditingTranscript(true);
+                          }}
+                        >
+                          Correct
+                        </button>
                       </span>
                     </div>
-                    <pre className="whitespace-pre-wrap font-reading text-reading-md text-on-surface">
-                      {detail.transcription}
-                    </pre>
+                    {editingTranscript ? (
+                      <div className="flex flex-col gap-2">
+                        <textarea
+                          rows={10}
+                          value={transcriptDraft}
+                          onChange={(e) => setTranscriptDraft(e.target.value)}
+                          className="w-full resize-y rounded border border-outline-variant bg-surface-container-lowest px-2.5 py-2 font-reading text-reading-md text-on-surface focus:border-secondary focus:outline-none focus:ring-2 focus:ring-secondary/35"
+                        />
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            className="btn-secondary px-3 py-1 text-label-sm"
+                            onClick={() => setEditingTranscript(false)}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            className="btn-primary px-3 py-1 text-label-sm"
+                            onClick={() => transcriptionMutation.mutate(transcriptDraft.trim() || detail.transcription || "")}
+                            disabled={transcriptionMutation.isPending}
+                          >
+                            {transcriptionMutation.isPending ? <Spinner className="h-3 w-3" /> : null}
+                            Save correction
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <pre className="whitespace-pre-wrap font-reading text-reading-md text-on-surface">
+                        {detail.transcription}
+                      </pre>
+                    )}
+                    {detail.ocr ? (
+                      <p className="mt-space-sm font-mono text-[10px] text-outline">
+                        {detail.ocr.model ? `OCR ${detail.ocr.model}` : ""}
+                        {detail.ocr.prompt_version ? ` · ${detail.ocr.prompt_version}` : ""}
+                        {detail.ocr.completed_at ? ` · ${formatTimeAgo(detail.ocr.completed_at)}` : ""}
+                      </p>
+                    ) : null}
                     {detail.is_handwriting_uncertain ? (
                       <p className="mt-space-sm flex items-center gap-1 rounded border border-review-border bg-review-bg px-2 py-1  text-label-sm text-review-fg">
                         <Icon name="warning" className="text-[14px]" /> Handwriting flagged as uncertain — verify
@@ -889,6 +993,67 @@ export function EvaluationWorkspace() {
                     </p>
                   </section>
                 ) : null}
+
+                <section className="space-y-2 border-b border-outline-variant py-3">
+                  <div className="flex items-center justify-between">
+                    <span className="label-overline">Manuscript pages</span>
+                    <button
+                      type="button"
+                      className="rounded border border-outline-variant px-1.5 py-0.5 text-[10px] text-on-surface-variant transition-colors hover:bg-surface-container"
+                      onClick={() => {
+                        setPagesDraft(detail.pages.map((p) => p.page_number).join(", "));
+                        setEditingPages(true);
+                      }}
+                    >
+                      Correct
+                    </button>
+                  </div>
+                  {editingPages ? (
+                    <div className="flex flex-col gap-2">
+                      <input
+                        value={pagesDraft}
+                        onChange={(e) => setPagesDraft(e.target.value)}
+                        placeholder="e.g. 1, 3"
+                        className="field font-mono text-body-sm"
+                      />
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-1 text-label-sm"
+                          onClick={() => setEditingPages(false)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-primary px-3 py-1 text-label-sm"
+                          onClick={savePages}
+                          disabled={pagesMutation.isPending}
+                        >
+                          {pagesMutation.isPending ? <Spinner className="h-3 w-3" /> : null}
+                          Save pages
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-body-sm text-on-surface-variant">
+                      Page{detail.pages.length === 1 ? "" : "s"}{" "}
+                      <span className="font-mono text-on-surface">
+                        {detail.pages.length > 0
+                          ? compactPageNumbers(detail.pages.map((p) => p.page_number))
+                          : "unknown"}
+                      </span>
+                      {detail.pages.some((p) => p.uncertain) ? (
+                        <span className="ml-1 text-review-fg">
+                          (uncertain — verify against the image)
+                        </span>
+                      ) : null}
+                      {detail.page_mapping_source === "examiner" ? (
+                        <span className="ml-1 text-verified-fg">(corrected by examiner)</span>
+                      ) : null}
+                    </p>
+                  )}
+                </section>
 
                 <section className="space-y-2 border-b border-outline-variant py-3">
                   <div className="label-overline">Marking scheme</div>
@@ -1152,6 +1317,8 @@ function shortTitle(answer: Answer | AnswerDetail): string {
 function AiAssessment({ evaluation }: { evaluation: Evaluation }) {
   const positives = evaluation.criteria.filter((c) => c.satisfied);
   const negatives = evaluation.criteria.filter((c) => !c.satisfied);
+  const needsReview =
+    evaluation.needs_human_review || evaluation.criteria.some((c) => c.needs_human_review);
   return (
     <section className="space-y-2 border-b border-outline-variant py-3">
       <div className="label-overline">AI assessment</div>
@@ -1159,27 +1326,66 @@ function AiAssessment({ evaluation }: { evaluation: Evaluation }) {
         {evaluation.reasoning}
       </p>
 
+      {needsReview ? (
+        <p className="flex items-start gap-1.5 rounded border border-review-border bg-review-bg px-2 py-1.5  text-label-sm text-review-fg">
+          <Icon name="warning" className="mt-0.5 text-[14px]" />
+          The model asked for human review of this evaluation — check every criterion against the
+          manuscript.
+        </p>
+      ) : null}
+
       {evaluation.criteria.length > 0 ? (
         <div className="text-body-sm">
           {evaluation.criteria.map((criterion) => (
             <div
               key={criterion.id}
-              className={`flex items-center justify-between gap-2 border-b border-outline-variant/60 py-1.5 last:border-0 ${
-                criterion.satisfied ? "text-verified-fg" : "text-critical-fg"
-              }`}
-              title={criterion.comment ?? undefined}
+              className="border-b border-outline-variant/60 py-1.5 last:border-0"
             >
-              <span className="flex min-w-0 items-center gap-1.5">
-                <span className="font-mono font-medium">
-                  {criterion.satisfied ? "✓" : "×"}
+              <div
+                className={`flex items-center justify-between gap-2 ${
+                  criterion.satisfied ? "text-verified-fg" : "text-critical-fg"
+                }`}
+                title={criterion.comment ?? undefined}
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <span className="font-mono font-medium">
+                    {criterion.satisfied ? "✓" : "×"}
+                  </span>
+                  <span className="truncate">{criterion.name}</span>
+                  {criterion.needs_human_review ? (
+                    <Icon name="warning" className="text-[13px] text-review-fg" />
+                  ) : null}
                 </span>
-                <span className="truncate">{criterion.name}</span>
-              </span>
-              <span className="shrink-0 font-mono font-medium">
-                {criterion.satisfied
-                  ? `+${criterion.awarded_marks.toFixed(1)}`
-                  : `−${criterion.max_marks.toFixed(1)}`}
-              </span>
+                <span className="shrink-0 font-mono font-medium">
+                  {criterion.awarded_marks.toFixed(1)} / {criterion.max_marks.toFixed(1)}
+                </span>
+              </div>
+              {criterion.comment ? (
+                <p className="mt-0.5 pl-5 text-[11px] leading-4 text-on-surface-variant">
+                  {criterion.comment}
+                </p>
+              ) : null}
+              {criterion.evidence.length > 0 ? (
+                <ul className="mt-1 space-y-0.5 pl-5">
+                  {criterion.evidence.map((quote, i) => (
+                    <li
+                      key={i}
+                      className="border-l-2 border-verified-border/60 pl-2 font-reading text-[12px] italic leading-4 text-on-surface-variant"
+                    >
+                      “{quote}”
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {criterion.missing_elements.length > 0 ? (
+                <ul className="mt-1 space-y-0.5 pl-5">
+                  {criterion.missing_elements.map((item, i) => (
+                    <li key={i} className="flex items-start gap-1 text-[11px] leading-4 text-critical-fg">
+                      <span className="font-mono">×</span> {item}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ))}
         </div>
@@ -1236,23 +1442,37 @@ function HistoryRow({ review }: { review: Review }) {
 }
 
 function Provenance({ evaluation }: { evaluation: Evaluation }) {
+  const rows: Array<[string, string]> = [
+    ["provider", evaluation.provider === "ollama" ? "Ollama · local" : evaluation.provider],
+    ["ocr model", evaluation.ocr_model ?? "—"],
+    ["eval model", evaluation.model],
+    ["prompt", evaluation.prompt_version],
+    ["engine", evaluation.engine_version],
+    ["confidence", formatConfidence(evaluation.confidence)],
+  ];
+  if (evaluation.processing_duration_ms != null) {
+    rows.push(["duration", `${(evaluation.processing_duration_ms / 1000).toFixed(1)}s`]);
+  }
+  const completedAt = evaluation.evaluation_completed_at ?? evaluation.created_at;
+  if (completedAt) {
+    rows.push(["completed", formatTimeAgo(completedAt)]);
+  }
+  if (evaluation.ocr_completed_at) {
+    rows.push(["ocr at", formatTimeAgo(evaluation.ocr_completed_at)]);
+  }
   return (
     <section className="space-y-2 border-b border-outline-variant py-3">
       <div className="label-overline">Evaluation provenance</div>
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[10px] text-on-surface-variant">
-        <span className="text-outline">provider</span>
-        <span className="text-right">
-          {evaluation.provider === "ollama" ? "Ollama · local" : evaluation.provider}
-          {evaluation.is_mock ? " (seed)" : ""}
-        </span>
-        <span className="text-outline">model</span>
-        <span className="truncate text-right">{evaluation.model}</span>
-        <span className="text-outline">prompt</span>
-        <span className="text-right">{evaluation.prompt_version}</span>
-        <span className="text-outline">engine</span>
-        <span className="text-right">{evaluation.engine_version}</span>
-        <span className="text-outline">confidence</span>
-        <span className="text-right">{formatConfidence(evaluation.confidence)}</span>
+        {rows.map(([label, value]) => (
+          <Fragment key={label}>
+            <span className="text-outline">{label}</span>
+            <span className="truncate text-right" title={value}>
+              {value}
+              {label === "provider" && evaluation.is_mock ? " (seed)" : ""}
+            </span>
+          </Fragment>
+        ))}
       </div>
       {evaluation.is_mock ? (
         <p className="border-y border-review-border bg-review-bg px-2 py-1.5 text-[11px] leading-4 text-review-fg">

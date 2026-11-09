@@ -179,10 +179,20 @@ async def test_probe_runs_real_chat_and_reports_ready(
     assert ai["ocr_available"] is True
 
     chat_requests = [r for r in seen if r.url.path == "/api/chat"]
-    assert len(chat_requests) == 1
-    body = json.loads(chat_requests[0].content)
-    assert body["model"] == "gemma3:4b"
-    assert body["stream"] is False
+    # One real inference request per configured model, run sequentially.
+    assert len(chat_requests) == 2
+    models = [json.loads(r.content)["model"] for r in chat_requests]
+    assert models == ["gemma3:4b", "gemma3:4b"]
+    for request in chat_requests:
+        body = json.loads(request.content)
+        assert body["stream"] is False
+        # The probe never leaves a model resident afterwards.
+        assert body["keep_alive"] == 0
+
+    # Per-model detail so the Settings screen can show each model's own state.
+    assert set(ai["models"]) == {"ocr", "evaluation"}
+    assert ai["models"]["ocr"]["ok"] is True
+    assert ai["models"]["evaluation"]["ok"] is True
 
 
 async def test_probe_reports_inference_error_when_chat_fails(

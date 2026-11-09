@@ -30,6 +30,8 @@ class OCRPageResult:
     unreadable_regions: list[dict] = field(default_factory=list)
     #: True when the model believes a human must look at this page.
     manual_review_required: bool = False
+    #: Wall-clock inference time for this page (None when not measured).
+    duration_ms: int | None = None
 
 
 @dataclass(slots=True)
@@ -41,6 +43,12 @@ class CriterionOutcome:
     awarded_marks: float
     satisfied: bool
     comment: str | None = None
+    #: Short quotes from the student's answer that justify the award.
+    evidence: list[str] = field(default_factory=list)
+    #: Rubric elements the answer did not cover.
+    missing_elements: list[str] = field(default_factory=list)
+    #: True when the model wants a human to double-check this criterion.
+    needs_human_review: bool = False
 
 
 @dataclass(slots=True)
@@ -62,14 +70,19 @@ class AnswerEvaluationResult:
     prompt_version: str = ""
     is_mock: bool = False
     validation_notes: list[str] = field(default_factory=list)
+    #: The model explicitly asked for human review of this evaluation.
+    needs_human_review: bool = False
+    #: Wall-clock inference time (None when not measured).
+    duration_ms: int | None = None
 
 
 @dataclass(slots=True)
 class EvaluationContext:
     """Everything the model is allowed to see when grading one answer.
 
-    The original answer image(s) are always included so the model can resolve
-    OCR mistakes — text alone is never trusted.
+    Images are only attached when the configured evaluation model accepts
+    them (the Qwen2.5 evaluator is text-only and grades from the OCR
+    transcription); providers decide per capability, never by assumption.
     """
 
     question_label: str

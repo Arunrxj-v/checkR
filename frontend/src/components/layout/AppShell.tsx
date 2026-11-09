@@ -11,6 +11,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-do
 import { useAuth } from "@/auth/AuthContext";
 import { Icon } from "@/components/ui/Icon";
 import { apiRequest } from "@/lib/api";
+import { aiStatusMeta } from "@/lib/aiStatus";
 import { initials } from "@/lib/format";
 import type { AppSettings, Page, Submission, User } from "@/lib/types";
 
@@ -348,29 +349,33 @@ export function AppShell() {
 
             <div className="flex shrink-0 items-center gap-space-sm">
               {settings ? (
-                <span
-                  className={`hidden items-center gap-space-xs rounded border px-space-sm py-1 font-mono text-[10px] uppercase tracking-[0.08em] sm:flex ${
-                    settings.ai.status === "ok"
-                      ? "border-desk-line bg-desk-raised text-desk-muted"
-                      : "border-critical-border bg-critical-bg text-critical-fg"
-                  }`}
-                  title={
-                    settings.ai.status === "ok"
-                      ? `${settings.ai.display_name} — local inference ready (${settings.ai.provider})`
-                      : settings.ai.detail
-                  }
-                >
-                  <Icon
-                    name={settings.ai.status === "ok" ? "verified" : "error"}
-                    className="text-[14px]"
-                  />
-                  {settings.ai.status === "ok"
-                    ? settings.ai.display_name
-                    : settings.ai.status === "model_missing"
-                      ? "Model not installed"
-                      : "Ollama unavailable"}
-                  <span className="hidden text-desk-muted md:inline">{settings.ai.provider}</span>
-                </span>
+                (() => {
+                  const meta = aiStatusMeta(settings.ai.status);
+                  const healthy = meta.tone === "healthy";
+                  return (
+                    <span
+                      className={`hidden items-center gap-space-xs rounded border px-space-sm py-1 font-mono text-[10px] uppercase tracking-[0.08em] sm:flex ${
+                        healthy
+                          ? "border-desk-line bg-desk-raised text-desk-muted"
+                          : meta.tone === "pending"
+                            ? "border-review-border bg-review-bg text-review-fg"
+                            : "border-critical-border bg-critical-bg text-critical-fg"
+                      }`}
+                      title={
+                        healthy
+                          ? `${settings.ai.display_name} — local inference ${settings.ai.status} (${settings.ai.provider})`
+                          : settings.ai.detail
+                      }
+                    >
+                      <Icon
+                        name={healthy ? "verified" : meta.tone === "pending" ? "hourglass_top" : "error"}
+                        className="text-[14px]"
+                      />
+                      {healthy ? settings.ai.display_name : meta.label}
+                      <span className="hidden text-desk-muted md:inline">{settings.ai.provider}</span>
+                    </span>
+                  );
+                })()
               ) : null}
               <Link
                 to="/evaluation"

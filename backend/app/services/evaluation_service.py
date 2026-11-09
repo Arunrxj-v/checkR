@@ -3,14 +3,18 @@
 Ties together: the answer + question + marking scheme, the provider abstraction,
 the versioned prompts, output validation, and persistence.
 
-The original answer image(s) are always passed to the model alongside the OCR
-text — text alone is never trusted. Every evaluation records its provenance so
-it can be reproduced or deliberately re-run.
+Images are only loaded and passed when the configured evaluation model accepts
+them (the Qwen2.5 evaluator is text-only and grades from the OCR
+transcription) — loading megabytes of page images that would never be sent is
+wasted memory on an 8 GB machine. Every evaluation records its provenance
+(provider, OCR model, evaluation model, prompt/engine version, timings) so it
+can be reproduced or deliberately re-run.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -144,6 +148,31 @@ async def _supersede_previous(db: AsyncSession, answer_id: uuid.UUID) -> None:
         evaluation.status = EvaluationStatus.SUPERSEDED
 
 
+async def _ocr_provenance(
+    db: AsyncSession, answer_id: uuid.UUID
+) -> tuple[str | None, datetime | None]:
+    """The OCR model that produced this answer's text, and when it finished.
+
+    Walks the answer's regions to the page OCR results. Returns
+    ``(None, None)`` when no OCR row exists (e.g. seeded answers).
+    """
+    from app.models.answer import OCRResult
+
+    row = (
+        await db.execute(
+            select(OCRResult.model, OCRResult.created_at)
+            .join(SubmissionPage, OCRResult.page_id == SubmissionPage.id)
+            .join(AnswerRegion, AnswerRegion.page_id == SubmissionPage.id)
+            .where(AnswerRegion.answer_id == answer_id)
+            .order_by(OCRResult.created_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if row is None:
+        return None, None
+    return str(row[0]), row[1]
+
+
 async def evaluate_answer(
     db: AsyncSession,
     *,
@@ -193,11 +222,29 @@ async def evaluate_answer(
             )
         ).scalar_one()
 
-    images, page_numbers = await load_answer_images(db, answer.id)
+    images: list[bytes] = []
+    page_numbers: list[int] = []
     context = build_context(answer, question, page_numbers=page_numbers, images=images)
     _, _, prompt_version = build_evaluation_prompt(context)
 
     provider = provider or get_provider()
+
+    # Only load page images when the evaluation model can actually receive
+    # them; the text-only evaluator grades from the OCR transcription.
+    accepts_images = True
+    checker = getattr(provider, "accepts_evaluation_images", None)
+    if checker is not None:
+        try:
+            accepts_images = bool(await checker())
+        except Exception:  # capability unknown -> do not waste memory loading
+            logger.warning("Could not determine image capability; evaluating from text.")
+            accepts_images = False
+    if accepts_images:
+        images, page_numbers = await load_answer_images(db, answer.id)
+        context = build_context(
+            answer, question, page_numbers=page_numbers, images=images
+        )
+
     answer.status = AnswerStatus.EVALUATING
     await db.flush()
 
@@ -232,6 +279,8 @@ async def evaluate_answer(
     sanitized = validation.result
     level = level_for(sanitized.confidence)
 
+    ocr_model, ocr_completed_at = await _ocr_provenance(db, answer.id)
+
     await _supersede_previous(db, answer.id)
 
     evaluation = Evaluation(
@@ -254,6 +303,10 @@ async def evaluate_answer(
         flags=sanitized.flags,
         raw_response=sanitized.raw if isinstance(sanitized.raw, dict) else {},
         validation_notes=validation.notes,
+        # Provenance: which models produced this result, and how long it took.
+        ocr_model=ocr_model,
+        ocr_completed_at=ocr_completed_at,
+        processing_duration_ms=sanitized.duration_ms,
     )
     db.add(evaluation)
     await db.flush()
@@ -268,6 +321,9 @@ async def evaluate_answer(
                 satisfied=criterion.satisfied,
                 comment=criterion.comment,
                 order_index=index,
+                evidence=list(criterion.evidence),
+                missing_elements=list(criterion.missing_elements),
+                needs_human_review=criterion.needs_human_review,
             )
         )
 
@@ -316,7 +372,9 @@ async def evaluate_answer(
             "confidence": sanitized.confidence,
             "provider": sanitized.provider,
             "model": sanitized.model,
+            "ocr_model": ocr_model,
             "prompt_version": evaluation.prompt_version,
+            "processing_duration_ms": sanitized.duration_ms,
             "is_mock": sanitized.is_mock,
         },
     )

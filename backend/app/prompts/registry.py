@@ -12,33 +12,34 @@ from types import ModuleType
 from app.ai.types import EvaluationContext
 from app.db.enums import PROMPT_FAMILY_BY_QUESTION_TYPE
 from app.prompts.answer_evaluation import (
-    diagram_v1,
-    numerical_v1,
-    programming_v1,
-    theory_v1,
+    diagram_v2,
+    numerical_v2,
+    programming_v2,
+    theory_v2,
 )
 from app.prompts.answer_evaluation.common import ENGINE_VERSION
-from app.prompts.ocr import handwriting_v1, handwriting_v2
+from app.prompts.ocr import handwriting_v1, handwriting_v2, handwriting_v3
 
 _OCR_PROMPTS: dict[str, ModuleType] = {
     handwriting_v1.PROMPT_VERSION: handwriting_v1,
     handwriting_v2.PROMPT_VERSION: handwriting_v2,
+    handwriting_v3.PROMPT_VERSION: handwriting_v3,
 }
 
 _EVAL_PROMPTS: dict[str, ModuleType] = {
-    theory_v1.FAMILY: theory_v1,
-    numerical_v1.FAMILY: numerical_v1,
-    programming_v1.FAMILY: programming_v1,
-    diagram_v1.FAMILY: diagram_v1,
+    theory_v2.FAMILY: theory_v2,
+    numerical_v2.FAMILY: numerical_v2,
+    programming_v2.FAMILY: programming_v2,
+    diagram_v2.FAMILY: diagram_v2,
 }
 
-CURRENT_OCR_PROMPT_VERSION = handwriting_v2.PROMPT_VERSION
+CURRENT_OCR_PROMPT_VERSION = handwriting_v3.PROMPT_VERSION
 CURRENT_ENGINE_VERSION = ENGINE_VERSION
 
 
 def prompt_family_for(question_type: str) -> str:
     """Map a question type to its prompt family (defaults to theory)."""
-    return PROMPT_FAMILY_BY_QUESTION_TYPE.get(question_type, theory_v1.FAMILY)
+    return PROMPT_FAMILY_BY_QUESTION_TYPE.get(question_type, theory_v2.FAMILY)
 
 
 def ocr_prompt(version: str | None = None) -> ModuleType:

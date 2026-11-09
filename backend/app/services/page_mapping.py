@@ -32,6 +32,12 @@ SOURCE_REGIONS = "regions"
 SOURCE_DETECTION = "detection_meta"
 #: Nothing to go on at all — the client must not claim a page.
 SOURCE_UNKNOWN = "unknown"
+#: An examiner corrected the mapping by hand (authoritative).
+SOURCE_EXAMINER = "examiner"
+
+#: Key under ``Answer.detection_meta`` holding an examiner's correction:
+#: ``{"page_numbers": [1, 2], "updated_at": "...", "actor_id": "..."}``.
+PAGE_MAPPING_OVERRIDE_KEY = "page_mapping_override"
 
 
 def _as_uuid(value: Any) -> uuid.UUID | None:
@@ -117,12 +123,54 @@ def build_answer_page_mapping(
     returned page carries the regions that landed on it so the workspace can
     focus the right part of the page.
 
+    An examiner's correction stored under
+    ``detection_meta["page_mapping_override"]`` wins over everything: the
+    teacher said which pages the answer is on, and detection cannot argue
+    with that. Regions on pages outside the correction are dropped from the
+    view rather than shown against the wrong page.
+
     When no region can be attributed, the mapping falls back to what detection
     recorded and is marked *uncertain*; when there is nothing to fall back to,
     no page is claimed at all.
     """
     pages_by_id = {str(page.id): page for page in pages}
     pages_by_number = {page.page_number: page for page in pages}
+
+    # --- Examiner correction (authoritative) ----------------------------- #
+    override = (detection_meta or {}).get(PAGE_MAPPING_OVERRIDE_KEY) or {}
+    override_numbers = [
+        n
+        for n in (_as_page_number(v) for v in (override.get("page_numbers") or []))
+        if n is not None
+    ]
+    if override_numbers:
+        allowed = {str(pages_by_number[n].id) for n in override_numbers if n in pages_by_number}
+        overridden_pages = tuple(
+            MappedPage(
+                page_id=pages_by_number[n].id,
+                page_number=pages_by_number[n].page_number,
+                regions=tuple(
+                    sorted(
+                        (
+                            r
+                            for r in regions
+                            if str(getattr(r, "page_id", "")) in allowed
+                        ),
+                        key=_region_sort_key,
+                    )
+                ),
+                uncertain=False,
+            )
+            for n in sorted(set(override_numbers))
+            if n in pages_by_number
+        )
+        if overridden_pages:
+            return AnswerPageMapping(
+                pages=overridden_pages,
+                page_numbers=tuple(p.page_number for p in overridden_pages),
+                uncertain=False,
+                source=SOURCE_EXAMINER,
+            )
 
     grouped: dict[str, list[Any]] = {}
     unmapped = 0

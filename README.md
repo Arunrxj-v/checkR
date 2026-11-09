@@ -444,8 +444,11 @@ list. Highlights:
 | `REDIS_URL` | `redis://localhost:6379/0` | Optional job wake-up signal |
 | `JWT_SECRET` | insecure default | **Must** be replaced in production (surfaced at startup) |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` / `REFRESH_TOKEN_EXPIRE_DAYS` | `30` / `14` | Token lifetimes |
-| `AI_PROVIDER` | `mock` | `mock` \| `gemini` \| `openai` \| `anthropic` \| `local` |
+| `AI_PROVIDER` | `ollama` | `ollama` \| `local` \| `gemini` \| `openai` \| `anthropic` (`mock` is for the test suite only) |
 | `AI_API_KEY` | *(empty)* | Provider credential — never hard-coded |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint; compose overrides it to `http://host.docker.internal:11434` for containers |
+| `OLLAMA_MODEL` | `gemma3:4b` | Model used for handwriting OCR and evaluation |
+| `OLLAMA_PROBE_TIMEOUT` / `OLLAMA_INFERENCE_TTL` | `90` / `60` | Settings model-check timeout / health-check result reuse (seconds) |
 | `AI_CONFIDENCE_HIGH` / `AI_CONFIDENCE_MEDIUM` | `0.85` / `0.60` | Confidence banding |
 | `STORAGE_PROVIDER` | `local` | `local` \| `s3` |
 | `MAX_UPLOAD_MB` / `MAX_SUBMISSION_PAGES` | `40` / `80` | Upload guardrails |
@@ -510,16 +513,36 @@ a mark can always be traced back to exactly how it was produced.
 Switching provider is configuration only:
 
 ```bash
-AI_PROVIDER=gemini
-AI_API_KEY=...            # never committed
-AI_MODEL=gemini-2.0-flash
+AI_PROVIDER=local           # any OpenAI-compatible local server
+AI_BASE_URL=http://localhost:11434/v1
+AI_MODEL=gemma3:4b
 ```
 
 ---
 
-## Mock mode
+## Local inference with Ollama
 
-`AI_PROVIDER=mock` (the default) makes the entire product testable offline:
+CheckR runs on **local Ollama inference** (`AI_PROVIDER=ollama`, the default):
+`gemma3:4b` handles both handwriting recognition (vision) and evaluation, and the
+Settings screen reports the runtime's real state — reachable, model installed,
+inference verified (`Connected` → `Ready`), or an actionable failure
+(`unavailable`, `model_not_installed`, `inference_error`). "Ready" is only ever
+reported after an actual `POST /api/chat` succeeds; nothing is assumed from the
+existence of a provider object.
+
+```bash
+ollama serve &
+ollama pull gemma3:4b
+docker compose up -d          # backend/worker reach the host via host.docker.internal
+```
+
+---
+
+## Mock mode (tests only)
+
+`AI_PROVIDER=mock` is available to the unit-test suite only (`ENVIRONMENT=test`);
+selecting it in any other environment raises a configuration error and no
+submission ever falls back to fabricated results:
 
 - No network calls and no API key required.
 - Output is derived from a **stable hash of its inputs**, so the same page or answer
@@ -528,9 +551,6 @@ AI_MODEL=gemini-2.0-flash
   in three places: the header chip, the Settings screen, and the per-answer
   *Evaluation Provenance* panel, which also warns that the score is for
   demonstration only.
-
-This is what makes the demo reproducible: what you see in the screenshots is what a
-fresh `docker compose up` produces.
 
 ---
 

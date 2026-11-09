@@ -1,15 +1,25 @@
-"""Ollama provider — CheckR's production inference runtime.
+"""Ollama provider — CheckR's dual-model local inference runtime.
 
 Talks to a local Ollama server over its native API:
 
-* ``GET  /api/tags`` — is Ollama reachable and is the configured model
+* ``GET  /api/tags`` — is Ollama reachable and are both configured models
   installed? (cached briefly so health checks do not hammer the server)
-* ``POST /api/chat``  — vision and text inference. Vision requests carry the
+* ``GET  /api/ps``   — which models are currently resident in memory.
+* ``POST /api/chat`` — vision and text inference. Vision requests carry the
   actual page image via Ollama's ``images`` field; nothing leaves the machine.
+* ``POST /api/generate`` (``keep_alive: 0``) — unload a model at a stage
+  boundary so only one model is ever resident on an 8 GB machine.
 
-The same model (``OLLAMA_MODEL``, ``gemma3:4b``) serves both capabilities, but
-OCR and evaluation keep separate prompts, separate validation and separate
-provenance records.
+Two models, used sequentially:
+
+* ``OLLAMA_OCR_MODEL`` (Qwen3-VL) transcribes page images;
+* ``OLLAMA_EVALUATION_MODEL`` (Qwen2.5) grades transcribed answers **as text**
+  — it has no vision capability, so page images are never attached to it.
+
+Memory discipline (8 GB M1): the Settings probe runs the two checks strictly
+one after the other and unloads each model immediately (``keep_alive: 0``);
+processing stages unload their model when the stage ends. A per-process lock
+serialises every request so a health probe never races a pipeline request.
 
 Retry policy: one loop in :meth:`OllamaProvider._chat` covers the whole
 request — transport failures, 5xx, empty/malformed model output and schema
@@ -17,7 +27,7 @@ validation failures are all retried up to ``OLLAMA_MAX_RETRIES`` times with
 exponential backoff. Configuration problems (model not installed, wrong base
 URL, capability disabled) are never retried.
 
-If Ollama or the model is unavailable the provider raises
+If Ollama or a model is unavailable the provider raises
 :class:`AIProviderError` with an actionable message — it never fabricates a
 result and never falls back to another provider.
 """
@@ -69,6 +79,12 @@ STATUS_INFERENCE_ERROR = "inference_error"  # installed, but inference failed
 #: health endpoints before Settings runs a fresh model check.
 INFERENCE_TTL = 60.0
 
+#: Roles in the order they are probed (OCR first, then evaluation) so the two
+#: models are never loaded at the same time.
+MODEL_ROLES: tuple[str, ...] = ("ocr", "evaluation")
+
+PROVIDER_DISPLAY_NAME = "Ollama Local AI"
+
 UNAVAILABLE_MESSAGE = (
     "Ollama is unavailable. Start the local Ollama service to process answer sheets."
 )
@@ -82,6 +98,34 @@ def display_name_for(model: str) -> str:
     if tag and tag != "latest":
         return f"{pretty} {tag.upper()} · Local"
     return f"{pretty} · Local" if pretty else "Local model"
+
+
+def model_label(model: str) -> str:
+    """Compact model label for the Settings screen.
+
+    ``qwen3-vl:2b-instruct-q4_K_M`` -> ``Qwen3-VL 2B``,
+    ``qwen2.5:1.5b`` -> ``Qwen2.5 1.5B``, ``gemma3:4b`` -> ``Gemma3 4B``.
+    The size comes from the tag so the label follows the installed model
+    instead of being hardcoded anywhere.
+    """
+    base, _, tag = (model or "").partition(":")
+    if not base:
+        return "Local model"
+    parts: list[str] = []
+    for segment in base.split("-"):
+        segment = segment.strip()
+        if not segment:
+            continue
+        segment = segment[0].upper() + segment[1:]
+        # Short all-letter segments (``vl``, ``instruct``) read better uppercase.
+        if segment.isalpha() and len(segment) <= 4:
+            segment = segment.upper()
+        parts.append(segment)
+    pretty = "-".join(parts)
+    size = re.match(r"(\d+(?:\.\d+)?)[bB]", tag or "")
+    if size:
+        return f"{pretty} {size.group(1).upper()}B"
+    return pretty
 
 
 def _model_installed(names: list[str], model: str) -> bool:
@@ -119,35 +163,51 @@ class OllamaProvider:
 
     name = "ollama"
     is_mock = False
+    #: Human label for the provider itself (Settings screen).
+    provider_display_name = PROVIDER_DISPLAY_NAME
 
     def __init__(
         self,
         *,
         base_url: str | None = None,
         model: str | None = None,
+        ocr_model: str | None = None,
+        evaluation_model: str | None = None,
         timeout: int | None = None,
         max_retries: int | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
-        self.model = model or settings.ollama_model
+        # Legacy single-model constructor: an explicit ``model`` sets both roles.
+        default_ocr = model or settings.ocr_model
+        default_eval = model or settings.evaluation_model
+        self.ocr_model = ocr_model or default_ocr
+        self.evaluation_model = evaluation_model or default_eval
+        #: Legacy single-model attribute — points at the evaluation model so
+        #: older call sites (provenance ``model_version``) keep working.
+        self.model = self.evaluation_model
         self.timeout = int(timeout or settings.ollama_request_timeout)
         self.max_retries = (
             int(max_retries) if max_retries is not None else settings.ollama_max_retries
         )
-        self.display_name = display_name_for(self.model)
+        self.display_name = display_name_for(self.evaluation_model)
         self._client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.timeout),
             headers={"User-Agent": "CheckR/ollama"},
             transport=transport,
         )
         self._availability_cache: tuple[float, dict[str, Any]] | None = None
-        #: Last verified inference result (``status``/``inference_ok``/…) and
-        #: when it was obtained; ``None`` until a real request has succeeded.
+        #: Last verified inference result (aggregate + per model) and when it
+        #: was obtained; ``None`` until a real request has succeeded.
         self._inference_result: dict[str, Any] | None = None
         self._inference_at: float = 0.0
         #: True while a probe inference is in flight (-> ``model_loading``).
         self._probe_in_flight = False
+        #: Serialises every request inside this process so a Settings probe
+        #: never overlaps a pipeline request (or an unload) here.
+        self._infer_lock = asyncio.Lock()
+        #: Roles loaded with a keep-alive since the last stage-boundary unload.
+        self._dirty: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # Connectivity / model availability (cheap: /api/tags + /api/ps)
@@ -155,7 +215,7 @@ class OllamaProvider:
     async def availability(
         self, *, refresh: bool = False, probe_timeout: float = PROBE_TIMEOUT
     ) -> dict[str, Any]:
-        """Check Ollama reachability, model installation and load state.
+        """Check Ollama reachability and that BOTH models are installed.
 
         TTL-cached so health endpoints do not hammer the server; ``refresh``
         forces a fresh probe (used by the processing preflight).
@@ -169,6 +229,12 @@ class OllamaProvider:
         self._availability_cache = (time.monotonic(), result)
         return result
 
+    def _role_model(self, role: str) -> str:
+        return self.ocr_model if role == "ocr" else self.evaluation_model
+
+    def _role_label(self, role: str) -> str:
+        return "OCR" if role == "ocr" else "Evaluation"
+
     async def _probe(self, probe_timeout: float) -> dict[str, Any]:
         try:
             resp = await self._client.get(
@@ -179,10 +245,13 @@ class OllamaProvider:
                 STATUS_UNAVAILABLE,
                 f"Ollama did not respond within {probe_timeout:g}s at {self.base_url}. "
                 + UNAVAILABLE_MESSAGE,
+                models=self._unavailable_models(STATUS_UNAVAILABLE),
             )
         except httpx.HTTPError as exc:
             return self._status(
-                STATUS_UNAVAILABLE, f"{UNAVAILABLE_MESSAGE} ({type(exc).__name__})."
+                STATUS_UNAVAILABLE,
+                f"{UNAVAILABLE_MESSAGE} ({type(exc).__name__}).",
+                models=self._unavailable_models(STATUS_UNAVAILABLE),
             )
 
         if resp.status_code >= 400:
@@ -190,6 +259,7 @@ class OllamaProvider:
                 STATUS_ERROR,
                 f"Ollama returned HTTP {resp.status_code} at {self.base_url}. "
                 + UNAVAILABLE_MESSAGE,
+                models=self._unavailable_models(STATUS_ERROR),
             )
 
         try:
@@ -199,42 +269,93 @@ class OllamaProvider:
             return self._status(
                 STATUS_ERROR,
                 f"Ollama returned an unreadable model list. {UNAVAILABLE_MESSAGE}",
+                models=self._unavailable_models(STATUS_ERROR),
             )
 
-        if not _model_installed(names, self.model):
+        # --- Per-model installation check (both roles must be present) ----- #
+        missing = [
+            m
+            for m in dict.fromkeys((self.ocr_model, self.evaluation_model))
+            if not _model_installed(names, m)
+        ]
+        role_entries: dict[str, dict[str, Any]] = {}
+        for role in MODEL_ROLES:
+            name = self._role_model(role)
+            entry = next(
+                (m for m in models if _model_installed([str(m.get("name", ""))], name)),
+                {},
+            )
+            installed = name not in missing
+            role_entries[role] = {
+                "name": name,
+                "label": model_label(name),
+                "role": role,
+                "installed": installed,
+                "loaded": None,
+                "vision_capable": _vision_capable(entry if isinstance(entry, dict) else {}),
+                "status": STATUS_MODEL_NOT_INSTALLED if not installed else STATUS_CONNECTED,
+                "detail": (
+                    f"{name} is not installed. Run: ollama pull {name}"
+                    if not installed
+                    else f"{name} installed."
+                ),
+            }
+
+        if missing:
+            detail = "; ".join(f"{m} is not installed. Run: ollama pull {m}" for m in missing)
             return self._status(
                 STATUS_MODEL_NOT_INSTALLED,
-                f"{self.model} is not installed. Run: ollama pull {self.model}",
+                detail,
                 model_installed=False,
+                models=role_entries,
             )
 
-        entry = next(
-            (m for m in models if _model_installed([str(m.get("name", ""))], self.model)),
-            {},
-        )
-        vision = _vision_capable(entry if isinstance(entry, dict) else {})
-
-        # Is the model already resident? Best-effort: a failing /api/ps must not
+        # Is a model already resident? Best-effort: a failing /api/ps must not
         # turn a healthy server into an error.
-        loaded: bool | None = None
         try:
             ps = await self._client.get(f"{self.base_url}/api/ps", timeout=probe_timeout)
+            running: list[str] = []
             if ps.status_code < 400:
                 running = [str(m.get("name", "")) for m in ps.json().get("models", [])]
-                loaded = _model_installed(running, self.model)
         except (httpx.HTTPError, ValueError, AttributeError, TypeError):
-            loaded = None
+            running = []
+        for role in MODEL_ROLES:
+            name = self._role_model(role)
+            loaded = _model_installed(running, name)
+            role_entries[role]["loaded"] = loaded
+            role_entries[role]["detail"] += (
+                " Loaded in memory." if loaded else " Not currently loaded."
+            )
 
-        detail = f"Ollama reachable at {self.base_url}; {self.model} installed."
-        if loaded:
-            detail += " Model is loaded in memory."
+        detail = (
+            f"Ollama reachable at {self.base_url}; "
+            f"{self.ocr_model} (OCR) and {self.evaluation_model} (evaluation) installed."
+        )
+        if any(e["loaded"] for e in role_entries.values()):
+            detail += " A model is loaded in memory."
         return self._status(
             STATUS_CONNECTED,
             detail,
             model_installed=True,
-            model_loaded=loaded,
-            vision_capable=vision,
+            model_loaded=role_entries["evaluation"]["loaded"],
+            vision_capable=role_entries["ocr"]["vision_capable"],
+            models=role_entries,
         )
+
+    def _unavailable_models(self, status: str) -> dict[str, dict[str, Any]]:
+        return {
+            role: {
+                "name": self._role_model(role),
+                "label": model_label(self._role_model(role)),
+                "role": role,
+                "installed": None,
+                "loaded": None,
+                "vision_capable": None,
+                "status": status,
+                "detail": UNAVAILABLE_MESSAGE,
+            }
+            for role in MODEL_ROLES
+        }
 
     @staticmethod
     def _status(status: str, detail: str, **extra: Any) -> dict[str, Any]:
@@ -251,21 +372,24 @@ class OllamaProvider:
             ),
             "model_loaded": extra.get("model_loaded"),
             "vision_capable": extra.get("vision_capable"),
+            "models": extra.get("models", {}),
             "detail": detail,
             "checked_at": _now_iso(),
         }
 
     # ------------------------------------------------------------------ #
-    # Real inference check: one tiny generation request
+    # Real inference check: one tiny generation request per model, in order
     # ------------------------------------------------------------------ #
     async def probe_inference(
         self, *, force: bool = False, timeout: float | None = None
     ) -> dict[str, Any]:
-        """Send an actual inference request and report whether it succeeded.
+        """Send an actual inference request per model and report the results.
 
         This is the only way the application claims ``ready``: no request, no
-        success. Results are reused for ``OLLAMA_INFERENCE_TTL`` seconds so a
-        page reload does not re-load the model; ``force`` bypasses the cache.
+        success. The two models are probed strictly sequentially and each is
+        unloaded immediately (``keep_alive: 0``) before the next one starts,
+        so both are never resident at once. Results are reused for
+        ``OLLAMA_INFERENCE_TTL`` seconds; ``force`` bypasses the cache.
         """
         now = time.monotonic()
         if (
@@ -282,70 +406,24 @@ class OllamaProvider:
                 "connected": True,
                 "inference_ok": None,
                 "detail": (
-                    f"{self.model} is loading into memory; the model check is "
-                    "already running — retry in a moment."
+                    "A model check is already running — the model is loading into "
+                    "memory; retry in a moment."
                 ),
             }
 
         self._probe_in_flight = True
         started = time.monotonic()
         try:
-            request_timeout = timeout or settings.ollama_probe_timeout
-            try:
-                resp = await self._client.post(
-                    f"{self.base_url}/api/chat",
-                    json={
-                        "model": self.model,
-                        "messages": [
-                            {"role": "user", "content": "Reply with the single word OK."}
-                        ],
-                        "stream": False,
-                        "options": {"num_predict": 4},
-                        "keep_alive": settings.ollama_keep_alive,
-                    },
-                    timeout=request_timeout,
+            per_role: dict[str, dict[str, Any]] = {}
+            for role in MODEL_ROLES:
+                # Sequential by construction: the previous model is unloaded
+                # before the next probe request is sent.
+                per_role[role] = await self._probe_model(
+                    role, self._role_model(role), timeout
                 )
-            except httpx.TimeoutException:
-                result = self._inference_failure(
-                    f"{self.model} did not complete inference within "
-                    f"{request_timeout:g}s (it may still be loading). Increase "
-                    "OLLAMA_PROBE_TIMEOUT or free system memory."
-                )
-            except httpx.HTTPError as exc:
-                result = self._inference_failure(
-                    f"Inference request failed ({type(exc).__name__}). "
-                    + UNAVAILABLE_MESSAGE
-                )
-            else:
-                if resp.status_code >= 400:
-                    result = self._inference_failure(
-                        f"Inference returned HTTP {resp.status_code}: "
-                        f"{resp.text[:200]}"
-                    )
-                else:
-                    try:
-                        content = str(resp.json()["message"]["content"] or "")
-                    except (ValueError, KeyError, TypeError, AttributeError):
-                        content = ""
-                    if content.strip():
-                        elapsed_ms = int((time.monotonic() - started) * 1000)
-                        result = {
-                            "status": STATUS_READY,
-                            "ok": True,
-                            "connected": True,
-                            "inference_ok": True,
-                            "inference_ms": elapsed_ms,
-                            "detail": (
-                                f"Real inference verified: {self.model} responded "
-                                f"in {elapsed_ms} ms."
-                            ),
-                        }
-                    else:
-                        result = self._inference_failure(
-                            "The model returned an empty response to a real "
-                            "inference request."
-                        )
-
+                await self._ensure_unloaded(self._role_model(role))
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            result = self._combine_probes(per_role, elapsed_ms)
             result["inference_checked_at"] = _now_iso()
             self._inference_result = result
             self._inference_at = time.monotonic()
@@ -353,11 +431,94 @@ class OllamaProvider:
         finally:
             self._probe_in_flight = False
 
+    async def _probe_model(
+        self, role: str, model: str, timeout: float | None
+    ) -> dict[str, Any]:
+        request_timeout = timeout or settings.ollama_probe_timeout
+        started = time.monotonic()
+        try:
+            resp = await self._client.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "user", "content": "Reply with the single word OK."}
+                    ],
+                    "stream": False,
+                    "options": {"num_predict": 4, "num_ctx": settings.ollama_num_ctx},
+                    # Unload as soon as the check finishes: the probe must not
+                    # leave a model resident on an 8 GB machine.
+                    "keep_alive": 0,
+                },
+                timeout=request_timeout,
+            )
+        except httpx.TimeoutException:
+            return self._inference_failure(
+                f"{model} did not complete inference within "
+                f"{request_timeout:g}s (it may still be loading). Increase "
+                "OLLAMA_PROBE_TIMEOUT or free system memory."
+            )
+        except httpx.HTTPError as exc:
+            return self._inference_failure(
+                f"Inference request failed ({type(exc).__name__}). " + UNAVAILABLE_MESSAGE
+            )
+
+        if resp.status_code >= 400:
+            return self._inference_failure(
+                f"Inference returned HTTP {resp.status_code}: {resp.text[:200]}"
+            )
+        try:
+            content = str(resp.json()["message"]["content"] or "")
+        except (ValueError, KeyError, TypeError, AttributeError):
+            content = ""
+        if not content.strip():
+            return self._inference_failure(
+                f"{model} returned an empty response to a real inference request."
+            )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "status": STATUS_READY,
+            "ok": True,
+            "inference_ok": True,
+            "inference_ms": elapsed_ms,
+            "detail": (
+                f"Real inference verified: {model} ({self._role_label(role)}) "
+                f"responded in {elapsed_ms} ms."
+            ),
+        }
+
+    def _combine_probes(
+        self, per_role: dict[str, dict[str, Any]], elapsed_ms: int
+    ) -> dict[str, Any]:
+        failed = [r for r in MODEL_ROLES if not per_role.get(r, {}).get("ok")]
+        if failed:
+            first = per_role[failed[0]]
+            status, ok, inference_ok = STATUS_INFERENCE_ERROR, False, False
+            detail = first.get("detail", "Inference failed.")
+        else:
+            status, ok, inference_ok = STATUS_READY, True, True
+            parts = ", ".join(
+                f"{self._role_model(r)} ({self._role_label(r)})" for r in MODEL_ROLES
+            )
+            detail = f"Real inference verified for {parts} in {elapsed_ms} ms."
+        return {
+            "status": status,
+            "ok": ok,
+            "connected": True,
+            "available": ok,
+            "inference_ok": inference_ok,
+            "inference_ms": elapsed_ms,
+            "detail": detail,
+            "models": {
+                role: dict(result, role=role, name=self._role_model(role))
+                for role, result in per_role.items()
+            },
+        }
+
     def _inference_failure(self, detail: str) -> dict[str, Any]:
         return {
             "status": STATUS_INFERENCE_ERROR,
             "ok": False,
-            "connected": True,
             "inference_ok": False,
             "detail": detail,
         }
@@ -370,13 +531,18 @@ class OllamaProvider:
 
         Cheap (cached tags probe); reports ``ready`` only when an actual
         inference request has succeeded recently, otherwise ``connected``
-        (reachable but unverified) or one of the failure states.
+        (reachable but unverified) or one of the failure states. The payload
+        carries per-model (``models.ocr`` / ``models.evaluation``) status so
+        the Settings screen can show each model's real state.
         """
         state = await self.availability()
         payload: dict[str, Any] = {
             "provider": self.name,
-            "model": self.model,
-            "display_name": self.display_name,
+            "provider_display_name": PROVIDER_DISPLAY_NAME,
+            "model": self.evaluation_model,
+            "display_name": display_name_for(self.evaluation_model),
+            "ocr_model": self.ocr_model,
+            "evaluation_model": self.evaluation_model,
             "is_mock": False,
             "base_url": self.base_url,
             "ocr_enabled": settings.ocr_enabled,
@@ -394,6 +560,9 @@ class OllamaProvider:
             "inference_checked_at": None,
             "checked_at": state.get("checked_at"),
             "detail": state["detail"],
+            "models": {
+                role: dict(entry) for role, entry in (state.get("models") or {}).items()
+            },
         }
         if payload["status"] in (
             STATUS_UNAVAILABLE,
@@ -409,34 +578,43 @@ class OllamaProvider:
             payload.update(
                 status=STATUS_MODEL_LOADING,
                 ok=False,
-                detail=f"{self.model} is loading into memory…",
+                detail="A model check is in progress — the model is loading into memory…",
             )
+            for entry in payload["models"].values():
+                entry["status"] = STATUS_MODEL_LOADING
+                entry["detail"] = "Model check in progress…"
             return payload
 
         if (
             self._inference_result is not None
             and time.monotonic() - self._inference_at < settings.ollama_inference_ttl
         ):
-            payload.update(self._inference_result)
+            inference = self._inference_result
+            payload.update(
+                {
+                    k: v
+                    for k, v in inference.items()
+                    if k not in ("models", "available")
+                }
+            )
             # A failed inference means the runtime cannot serve work right now,
             # even though the server itself is reachable.
             payload["available"] = bool(payload["ok"])
+            for role, entry in (inference.get("models") or {}).items():
+                if role in payload["models"]:
+                    payload["models"][role].update(entry)
             return payload
 
         payload.update(
             status=STATUS_CONNECTED,
             ok=True,
             detail=(
-                f"Ollama reachable and {self.model} installed. Inference has "
+                f"Ollama reachable; {self.ocr_model} (OCR) and "
+                f"{self.evaluation_model} (evaluation) installed. Inference has "
                 "not been verified yet — the Settings screen runs a real model "
                 "check."
             ),
         )
-        if self._inference_result is not None:
-            payload["inference_ok"] = self._inference_result.get("inference_ok")
-            payload["inference_checked_at"] = self._inference_result.get(
-                "inference_checked_at"
-            )
         return payload
 
     async def require_available(self) -> None:
@@ -446,6 +624,77 @@ class OllamaProvider:
             raise AIProviderError(state["detail"], retryable=True, kind="unavailable")
         if state["status"] == STATUS_MODEL_NOT_INSTALLED:
             raise AIProviderError(state["detail"], retryable=False, kind="model_missing")
+
+    async def accepts_evaluation_images(self) -> bool:
+        """Whether the configured evaluation model can take page images.
+
+        Driven by Ollama's reported capabilities, never by assumption: the
+        configured Qwen2.5 evaluator is text-only, so images must not be sent
+        (Ollama would reject them).
+        """
+        state = await self.availability()
+        entry = (state.get("models") or {}).get("evaluation") or {}
+        return bool(entry.get("vision_capable"))
+
+    # ------------------------------------------------------------------ #
+    # Stage-boundary unload (memory discipline on 8 GB machines)
+    # ------------------------------------------------------------------ #
+    async def unload_models(
+        self, *, roles: tuple[str, ...] = MODEL_ROLES
+    ) -> list[str]:
+        """Unload resident models at a stage boundary.
+
+        Only models this provider loaded with a keep-alive since the last
+        unload are touched, so an idle stage never triggers a pointless load.
+        Best-effort: a failing unload is logged, never raised — unloading must
+        not fail a completed stage. Returns the models actually unloaded.
+        """
+        unloaded: list[str] = []
+        for role in roles:
+            if role not in self._dirty:
+                continue
+            model = self._role_model(role)
+            if await self._ensure_unloaded(model):
+                unloaded.append(model)
+            self._dirty.discard(role)
+        if unloaded:
+            logger.info("Unloaded model(s) at stage boundary: %s", ", ".join(unloaded))
+        return unloaded
+
+    async def _ensure_unloaded(self, model: str) -> bool:
+        """Unload ``model`` if it is resident. Returns True when unloaded."""
+        loaded = await self._model_resident(model)
+        if not loaded:
+            return False
+        try:
+            async with self._infer_lock:
+                resp = await self._client.post(
+                    f"{self.base_url}/api/generate",
+                    json={"model": model, "keep_alive": 0},
+                    timeout=min(self.timeout, 60),
+                )
+            if resp.status_code >= 400:
+                logger.warning(
+                    "Unload request for %s failed (HTTP %s): %s",
+                    model,
+                    resp.status_code,
+                    resp.text[:200],
+                )
+                return False
+            return True
+        except httpx.HTTPError as exc:
+            logger.warning("Could not unload %s: %s", model, exc)
+            return False
+
+    async def _model_resident(self, model: str) -> bool:
+        try:
+            resp = await self._client.get(f"{self.base_url}/api/ps", timeout=PROBE_TIMEOUT)
+            if resp.status_code >= 400:
+                return False
+            running = [str(m.get("name", "")) for m in resp.json().get("models", [])]
+        except (httpx.HTTPError, ValueError, AttributeError, TypeError):
+            return False
+        return _model_installed(running, model)
 
     # ------------------------------------------------------------------ #
     # Transport — a single attempt; retries live in _chat
@@ -473,12 +722,22 @@ class OllamaProvider:
                 kind="unavailable",
             ) from exc
 
+        error_text = resp.text.lower()
+        if "out of memory" in error_text or "not enough memory" in error_text:
+            raise AIProviderError(
+                f"Ollama ran out of memory running {body.get('model')}. Close "
+                "other applications, or lower OLLAMA_NUM_CTX, then retry.",
+                retryable=True,
+                kind="oom",
+            )
+
         if resp.status_code == 404 and "not found" in resp.text:
             # Model missing (404 {"error":"model 'x' not found"}) or a wrong
             # base URL (404 page not found). Neither is retryable.
             if "model" in resp.text:
                 raise AIProviderError(
-                    f"{self.model} is not installed. Run: ollama pull {self.model}",
+                    f"{body.get('model')} is not installed. "
+                    f"Run: ollama pull {body.get('model')}",
                     retryable=False,
                     kind="model_missing",
                 )
@@ -531,6 +790,8 @@ class OllamaProvider:
         user: str,
         images: list[bytes],
         *,
+        model: str | None = None,
+        role: str = "evaluation",
         parse: Callable[[dict[str, Any]], T] | None = None,
         temperature: float = 0.1,
         timeout: int | None = None,
@@ -540,6 +801,7 @@ class OllamaProvider:
         Retries (``OLLAMA_MAX_RETRIES``) cover transport failures *and* model
         output that cannot be parsed or validated — never configuration errors.
         """
+        target = model or self.evaluation_model
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -548,11 +810,14 @@ class OllamaProvider:
             messages[1]["images"] = [encode_b64(img) for img in images]
 
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": target,
             "stream": False,
             "format": "json",  # structured output: the model must answer JSON
             "keep_alive": settings.ollama_keep_alive,
-            "options": {"temperature": temperature},
+            "options": {
+                "temperature": temperature,
+                "num_ctx": settings.ollama_num_ctx,
+            },
             "messages": messages,
         }
 
@@ -560,7 +825,11 @@ class OllamaProvider:
         last_error: AIProviderError | None = None
         for attempt in range(attempts):
             try:
-                data = await self._post_once(body, timeout=timeout)
+                async with self._infer_lock:
+                    data = await self._post_once(body, timeout=timeout)
+                # Real work keeps the model resident between pages; remember
+                # the role so the stage boundary can unload it later.
+                self._dirty.add(role)
                 try:
                     text = data["message"]["content"] or ""
                 except (KeyError, TypeError) as exc:
@@ -607,14 +876,14 @@ class OllamaProvider:
         )
 
     # ------------------------------------------------------------------ #
-    # Capability 1: handwriting recognition (vision)
+    # Capability 1: handwriting recognition (vision — OCR model)
     # ------------------------------------------------------------------ #
     async def transcribe_page(
         self,
         image_bytes: bytes,
         *,
         page_number: int,
-        prompt_version: str = "handwriting_v2",
+        prompt_version: str = "handwriting_v3",
         previous_context: str | None = None,
     ) -> OCRPageResult:
         from app.prompts.registry import ocr_prompt
@@ -632,16 +901,23 @@ class OllamaProvider:
 
         module = ocr_prompt(prompt_version)
         user = module.build(page_number, previous_context=previous_context)
+        started = time.monotonic()
         parsed: RawOCR = await self._chat(
-            module.SYSTEM, user, [image_bytes], parse=RawOCR.model_validate
+            module.SYSTEM,
+            user,
+            [image_bytes],
+            model=self.ocr_model,
+            role="ocr",
+            parse=RawOCR.model_validate,
         )
+        duration_ms = int((time.monotonic() - started) * 1000)
 
         return OCRPageResult(
             text=parsed.text,
             confidence=parsed.confidence,
             regions=[r.model_dump() for r in parsed.regions],
             raw=parsed.model_dump(),
-            model=self.model,
+            model=self.ocr_model,
             provider=self.name,
             prompt_version=prompt_version,
             is_mock=False,
@@ -649,10 +925,11 @@ class OllamaProvider:
             diagrams=[d.model_dump() for d in parsed.diagrams],
             unreadable_regions=[u.model_dump() for u in parsed.unreadable_regions],
             manual_review_required=parsed.manual_review_required,
+            duration_ms=duration_ms,
         )
 
     # ------------------------------------------------------------------ #
-    # Capability 2: answer evaluation
+    # Capability 2: answer evaluation (text-only — evaluation model)
     # ------------------------------------------------------------------ #
     async def evaluate_answer(
         self, context: EvaluationContext, *, prompt_version: str
@@ -666,10 +943,23 @@ class OllamaProvider:
                 kind="config",
             )
 
+        # The evaluation model is text-only (Qwen2.5 has no vision): page
+        # images are never attached. Grading works from the OCR transcription.
+        images: list[bytes] = []
+        if context.images and await self.accepts_evaluation_images():
+            images = list(context.images)
+
         system, user, version = build_evaluation_prompt(context)
+        started = time.monotonic()
         parsed: RawEvaluation = await self._chat(
-            system, user, context.images, parse=RawEvaluation.model_validate
+            system,
+            user,
+            images,
+            model=self.evaluation_model,
+            role="evaluation",
+            parse=RawEvaluation.model_validate,
         )
+        duration_ms = int((time.monotonic() - started) * 1000)
         criteria = map_criteria(
             [c.model_dump() for c in parsed.criteria], context.criteria, context.max_marks
         )
@@ -685,6 +975,9 @@ class OllamaProvider:
                     awarded_marks=c["awarded_marks"],
                     satisfied=c["satisfied"],
                     comment=c["comment"],
+                    evidence=c.get("evidence", []),
+                    missing_elements=c.get("missing_elements", []),
+                    needs_human_review=bool(c.get("needs_human_review", False)),
                 )
                 for c in criteria
             ],
@@ -692,11 +985,13 @@ class OllamaProvider:
             gaps=parsed.gaps,
             contradictions=parsed.contradictions,
             flags=parsed.flags,
+            needs_human_review=parsed.needs_human_review,
             raw=parsed.model_dump(),
             provider=self.name,
-            model=self.model,
+            model=self.evaluation_model,
             prompt_version=version,
             is_mock=False,
+            duration_ms=duration_ms,
         )
 
     async def aclose(self) -> None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 from app.ai.types import EvaluationContext
 from app.prompts.answer_evaluation.common import COMMON_RULES, JSON_CONTRACT, render_context
 
-PROMPT_VERSION = "numerical_v1"
+PROMPT_VERSION = "numerical_v2"
 FAMILY = "numerical"
 
 SYSTEM = (

@@ -17,6 +17,7 @@ import socket
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.db.advisory import inference_slot
 from app.db.session import dispose_engine, get_sessionmaker
 from app.services import job_service, processing_service
 from app.services.job_service import WAKEUP_CHANNEL
@@ -72,15 +73,19 @@ class Worker:
 
         logger.info("Running job %s (%s)", job.id, job.job_type.value)
         maker = get_sessionmaker()
-        async with maker() as db:
-            try:
-                await handler(db, job)
-                await db.commit()
-            except Exception as exc:
-                await db.rollback()
-                logger.exception("Job %s failed", job.id)
-                await job_service.mark_failed(job.id, str(exc), retry=True)
-                return
+        # One inference job at a time across all processes: the slot is a
+        # PostgreSQL advisory lock, so an API-triggered job and another
+        # worker's job can never load two models at once.
+        async with inference_slot():
+            async with maker() as db:
+                try:
+                    await handler(db, job)
+                    await db.commit()
+                except Exception as exc:
+                    await db.rollback()
+                    logger.exception("Job %s failed", job.id)
+                    await job_service.mark_failed(job.id, str(exc), retry=True)
+                    return
         await job_service.mark_succeeded(job.id)
 
     async def run(self) -> None:

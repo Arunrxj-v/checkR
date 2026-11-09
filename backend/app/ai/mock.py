@@ -79,6 +79,15 @@ def _pick(seq: list, seed: int):
     return seq[seed % len(seq)]
 
 
+def _first_line(text: str) -> str:
+    """First non-empty line of a transcription (used as mock evidence)."""
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:120]
+    return ""
+
+
 class MockProvider:
     """Offline provider implementing the :class:`AIProvider` protocol."""
 
@@ -174,22 +183,31 @@ class MockProvider:
             seed = _stable_seed(base_seed, idx, name)
             roll = seed % 100
 
+            # Mock evidence quotes a line of the transcription so partial
+            # awards are never flagged as "no evidence" in demo data.
+            quote = _first_line(context.transcription) or "answer text"
             if roll < 62:
                 awarded = max_marks
                 satisfied = True
                 comment = "Clearly addressed."
                 strengths.append(name)
+                evidence = [quote]
+                missing: list[str] = []
             elif roll < 84:
                 awarded = round(max_marks * 0.5, 1)
                 satisfied = True
                 comment = "Partially addressed; some detail missing."
                 strengths.append(name)
                 gaps.append(f"{name}: partial coverage")
+                evidence = [quote]
+                missing = [f"{name}: supporting detail not fully covered"]
             else:
                 awarded = 0.0
                 satisfied = False
                 comment = "Not found in the response."
                 gaps.append(f"{name}: not addressed")
+                evidence = []
+                missing = [f"{name}: not addressed in the response"]
 
             # Detect an (un)seldom contradiction to exercise that pathway.
             if seed % 37 == 0 and awarded == 0.0:
@@ -202,6 +220,9 @@ class MockProvider:
                     awarded_marks=awarded,
                     satisfied=satisfied,
                     comment=comment,
+                    evidence=evidence,
+                    missing_elements=missing,
+                    needs_human_review=False,
                 )
             )
             total_awarded += awarded

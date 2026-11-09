@@ -249,7 +249,7 @@ async def test_transcribe_page_sends_image_and_parses_structure():
     assert result.is_mock is False
     assert result.provider == "ollama"
     assert result.model == "gemma3:4b"
-    assert result.prompt_version == "handwriting_v2"
+    assert result.prompt_version == "handwriting_v3"
     assert "connection oriented" in result.text
     assert result.confidence == pytest.approx(0.87)
     assert len(result.detected_answers) == 1
@@ -366,27 +366,62 @@ async def test_evaluate_answer_maps_criteria_and_provenance():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":  # capability check: /api/tags, /api/ps
+            if request.url.path == "/api/tags":
+                return tags_response(["gemma3:4b"])
+            return httpx.Response(200, json={"models": []})
         captured["body"] = json.loads(request.content)
         return chat_response(EVAL_JSON)
 
     provider = make_provider(handler)
     try:
         result = await provider.evaluate_answer(
-            evaluation_context(), prompt_version="theory_v1"
+            evaluation_context(), prompt_version="theory_v2"
         )
     finally:
         await provider.aclose()
 
-    # The answer image accompanies the evaluation request.
+    # A vision-capable evaluation model receives the answer image.
     assert len(captured["body"]["messages"][1]["images"]) == 1
 
     assert result.provider == "ollama"
     assert result.model == "gemma3:4b"
-    assert result.prompt_version == "theory_v1"
+    assert result.prompt_version == "theory_v2"
     assert result.is_mock is False
     assert len(result.criteria) == 5
     assert sum(c.awarded_marks for c in result.criteria) == pytest.approx(4)
     assert 0 <= result.awarded_marks <= 5
+
+
+async def test_evaluate_answer_skips_images_for_text_only_model():
+    """The text-only evaluation model never receives page images."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            if request.url.path == "/api/tags":
+                return tags_response(["qwen2.5:1.5b"], vision=False)
+            return httpx.Response(200, json={"models": []})
+        captured["body"] = json.loads(request.content)
+        return chat_response(EVAL_JSON)
+
+    provider = OllamaProvider(
+        base_url="http://ollama.test:11434",
+        ocr_model="qwen3-vl:2b-instruct-q4_K_M",
+        evaluation_model="qwen2.5:1.5b",
+        timeout=5,
+        max_retries=0,
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        result = await provider.evaluate_answer(
+            evaluation_context(), prompt_version="theory_v2"
+        )
+    finally:
+        await provider.aclose()
+
+    assert "images" not in captured["body"]["messages"][1]
+    assert result.model == "qwen2.5:1.5b"
 
 
 async def test_evaluate_answer_unavailable_is_actionable():

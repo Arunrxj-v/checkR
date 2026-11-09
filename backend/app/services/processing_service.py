@@ -189,8 +189,13 @@ async def _transcribe_page(
 ) -> str | None:
     """OCR a page, reusing an existing result unless ``force`` is set.
 
-    Returns the page's transcription (freshly read or cached).
+    A stored result is only reused when it came from the *same* prompt
+    version **and** the same OCR model — switching models must not silently
+    serve stale transcriptions. Returns the page's transcription.
     """
+    provider = get_provider()
+    ocr_model = getattr(provider, "ocr_model", None) or provider.model
+
     if not force:
         existing = (
             await db.execute(
@@ -198,6 +203,7 @@ async def _transcribe_page(
                 .where(
                     OCRResult.page_id == page.id,
                     OCRResult.prompt_version == CURRENT_OCR_PROMPT_VERSION,
+                    OCRResult.model == ocr_model,
                 )
                 .order_by(OCRResult.created_at.desc())
                 .limit(1)
@@ -212,7 +218,6 @@ async def _transcribe_page(
     key = page.processed_storage_key or page.original_storage_key
     image = await storage.read(key)
 
-    provider = get_provider()
     raw_result = await provider.transcribe_page(
         image,
         page_number=page.page_number,
@@ -221,18 +226,19 @@ async def _transcribe_page(
     )
     result = validate_ocr(raw_result)
 
-    # Keep a single current OCR row per page + prompt version.
+    # Keep a single current OCR row per page + prompt version + model.
     await db.execute(
         delete(OCRResult).where(
             OCRResult.page_id == page.id,
             OCRResult.prompt_version == CURRENT_OCR_PROMPT_VERSION,
+            OCRResult.model == ocr_model,
         )
     )
     db.add(
         OCRResult(
             page_id=page.id,
             provider=result.provider or provider.name,
-            model=result.model or provider.model,
+            model=result.model or ocr_model,
             prompt_version=result.prompt_version or CURRENT_OCR_PROMPT_VERSION,
             text=result.text,
             confidence=result.confidence,
@@ -242,6 +248,7 @@ async def _transcribe_page(
             # segmentation, audit and re-derivation.
             raw_response=result.raw if isinstance(result.raw, dict) else {},
             is_mock=result.is_mock,
+            duration_ms=result.duration_ms,
         )
     )
     page.ocr_confidence = result.confidence
@@ -249,6 +256,22 @@ async def _transcribe_page(
     page.error_message = None
     await db.flush()
     return result.text
+
+
+async def _release_models(provider: object) -> None:
+    """Unload resident models at a stage boundary (8 GB memory discipline).
+
+    Best-effort: an unload failure never fails a completed stage.
+    """
+    if not settings.ollama_unload_after_stage:
+        return
+    unload = getattr(provider, "unload_models", None)
+    if unload is None:
+        return
+    try:
+        await unload()
+    except Exception as exc:  # noqa: BLE001 - unload is advisory only
+        logger.warning("Stage-boundary model unload failed: %s", exc)
 
 
 # --------------------------------------------------------------------------- #
@@ -354,6 +377,10 @@ async def process_submission(db: AsyncSession, job: ProcessingJob) -> None:
         "ocr_prompt_version": CURRENT_OCR_PROMPT_VERSION,
     }
     await db.flush()
+
+    # Stage boundary: the OCR (vision) model is done for this submission —
+    # unload it so the evaluation model can load into the same memory.
+    await _release_models(provider)
 
     # Continue the chain.
     await job_service.enqueue(
@@ -620,6 +647,9 @@ async def evaluate_submission(db: AsyncSession, job: ProcessingJob) -> None:
         )
     await db.flush()
 
+    # Stage boundary: evaluation is over — release the model's memory.
+    await _release_models(get_provider())
+
 
 async def evaluate_answer_job(db: AsyncSession, job: ProcessingJob) -> None:
     answer = (
@@ -636,6 +666,7 @@ async def evaluate_answer_job(db: AsyncSession, job: ProcessingJob) -> None:
     await evaluation_service.evaluate_answer(
         db, answer=answer, question=answer.question, force=force
     )
+    await _release_models(get_provider())
     submission = (
         await db.execute(select(Submission).where(Submission.id == answer.submission_id))
     ).scalar_one()
@@ -658,6 +689,7 @@ async def preprocess_page_job(db: AsyncSession, job: ProcessingJob) -> None:
     previous_context = await _previous_page_context(db, pages, page)
     await _transcribe_page(db, page, force=True, previous_context=previous_context)
     await db.flush()
+    await _release_models(get_provider())
     await job_service.enqueue(
         db, job_type=JobType.SEGMENT_ANSWERS, submission_id=page.submission_id
     )
@@ -675,6 +707,7 @@ async def ocr_page_job(db: AsyncSession, job: ProcessingJob) -> None:
     previous_context = await _previous_page_context(db, pages, page)
     await _transcribe_page(db, page, force=True, previous_context=previous_context)
     await db.flush()
+    await _release_models(get_provider())
     await job_service.enqueue(
         db, job_type=JobType.SEGMENT_ANSWERS, submission_id=page.submission_id
     )
