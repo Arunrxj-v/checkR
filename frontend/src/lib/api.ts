@@ -239,6 +239,12 @@ export const authApi = {
 export const systemApi = {
   health: (signal?: AbortSignal) => apiRequest<Health>("/health", { signal }),
   settings: (signal?: AbortSignal) => apiRequest<AppSettings>("/settings", { signal }),
+  /** Run a real inference request against the configured model (Settings model check). */
+  aiProbe: (force = false) =>
+    apiRequest<{ ai: AppSettings["ai"] }>(
+      `/system/ai/probe?force=${force ? "true" : "false"}`,
+      { method: "POST" },
+    ),
   auditLogs: (params?: { entity_type?: string; entity_id?: string; action?: string; limit?: number; offset?: number }) =>
     apiRequest<Page<AuditLogEntry>>("/audit-logs", { query: params }),
 };
@@ -366,6 +372,18 @@ export const answerApi = {
     answerId: string,
     payload: { action: string; teacher_score?: number; comment?: string; reason?: string },
   ) => apiRequest<AnswerDetail>(`/answers/${answerId}/review`, { method: "PUT", body: payload }),
+  /** Examiner-corrected transcription (the AI suggestion is never overwritten). */
+  correctTranscription: (answerId: string, transcription: string) =>
+    apiRequest<AnswerDetail>(`/answers/${answerId}/transcription`, {
+      method: "PATCH",
+      body: { transcription },
+    }),
+  /** Examiner-corrected answer ↔ page mapping (1-based page numbers). */
+  correctPages: (answerId: string, pageNumbers: number[]) =>
+    apiRequest<AnswerDetail>(`/answers/${answerId}/pages`, {
+      method: "PUT",
+      body: { page_numbers: pageNumbers },
+    }),
 };
 
 // --------------------------------------------------------------------------- //

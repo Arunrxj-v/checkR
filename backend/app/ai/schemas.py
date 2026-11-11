@@ -15,6 +15,12 @@ class RawCriterion(BaseModel):
     max_marks: float | None = None
     satisfied: bool | None = None
     comment: str | None = Field(default=None, max_length=2000)
+    #: Quotes from the student's answer justifying this award (never invented).
+    evidence: list[str] = Field(default_factory=list)
+    #: Rubric elements the answer did not cover.
+    missing_elements: list[str] = Field(default_factory=list)
+    #: The model wants a human to double-check this criterion.
+    needs_human_review: bool = False
 
     @field_validator("name", mode="before")
     @classmethod
@@ -28,6 +34,24 @@ class RawCriterion(BaseModel):
             return float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0.0
+
+    @field_validator("evidence", "missing_elements", mode="before")
+    @classmethod
+    def _coerce_str_list(cls, v: object) -> list[str]:
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        if isinstance(v, (list, tuple)):
+            return [str(x) for x in v if x is not None and str(x).strip()]
+        return [str(v)]
+
+    @field_validator("needs_human_review", mode="before")
+    @classmethod
+    def _coerce_bool(cls, v: object) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "yes", "1")
+        return bool(v)
 
 
 class RawEvaluation(BaseModel):
@@ -43,6 +67,8 @@ class RawEvaluation(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
     flags: list[str] = Field(default_factory=list)
+    #: The model is unsure and asks for human review of the whole evaluation.
+    needs_human_review: bool = False
 
     @field_validator("awarded_marks", "confidence", mode="before")
     @classmethod
@@ -67,6 +93,13 @@ class RawEvaluation(BaseModel):
         if isinstance(v, (list, tuple)):
             return [str(x) for x in v if x is not None]
         return [str(v)]
+
+    @field_validator("needs_human_review", mode="before")
+    @classmethod
+    def _coerce_bool(cls, v: object) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "yes", "1")
+        return bool(v)
 
 
 class RawOCRRegion(BaseModel):
@@ -165,6 +198,9 @@ class RawOCR(BaseModel):
     page_number: int | None = None
     text: str = ""
     confidence: float = 0.0
+    #: The model's own report of how the page read went — "completed",
+    #: "partial" or "unreadable". Never a calibrated accuracy measurement.
+    ocr_status: str = "completed"
     regions: list[RawOCRRegion] = Field(default_factory=list)
     detected_answers: list[RawDetectedAnswer] = Field(default_factory=list)
     diagrams: list[RawOCRDiagram] = Field(default_factory=list)
@@ -192,6 +228,14 @@ class RawOCR(BaseModel):
             return float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
             return 0.0
+
+    @field_validator("ocr_status", mode="before")
+    @classmethod
+    def _coerce_status(cls, v: object) -> str:
+        if v is None:
+            return "completed"
+        status = str(v).strip().lower()
+        return status if status in ("completed", "partial", "unreadable") else "completed"
 
     @field_validator("manual_review_required", mode="before")
     @classmethod

@@ -76,7 +76,13 @@ class Settings(BaseSettings):
 
     # --- Ollama (local inference runtime) ---
     ollama_base_url: str = "http://localhost:11434"
+    #: Legacy single-model setting. Still honoured as the fallback when either
+    #: dedicated model below is empty (older deployments only).
     ollama_model: str = "gemma3:4b"
+    #: Vision model that reads scanned/handwritten answer-sheet pages (OCR).
+    ollama_ocr_model: str = "qwen3-vl:2b-instruct-q4_K_M"
+    #: Text model that grades transcribed answers against the marking scheme.
+    ollama_evaluation_model: str = "qwen2.5:1.5b"
     ollama_request_timeout: int = 300
     ollama_max_retries: int = 2
     #: Timeout for the Settings "model check" — a real (tiny) inference request
@@ -89,6 +95,12 @@ class Settings(BaseSettings):
     #: to release memory on an 8 GB machine, long enough to avoid reloads while
     #: a batch of pages is processed.
     ollama_keep_alive: str = "10m"
+    #: Context window requested for every inference call. 4096 keeps the KV
+    #: cache small enough for an 8 GB machine while fitting exam answers.
+    ollama_num_ctx: int = 4096
+    #: Unload models at stage boundaries (OCR done / evaluation done) so only
+    #: one of the two models is ever resident on an 8 GB machine.
+    ollama_unload_after_stage: bool = True
 
     # Capability switches. Both default on; disabling either makes the
     # pipeline report the disabled capability explicitly instead of guessing.
@@ -150,6 +162,16 @@ class Settings(BaseSettings):
         return (self.seed_teacher_email, self.seed_teacher_password)
 
     @property
+    def ocr_model(self) -> str:
+        """Effective OCR model (dedicated setting, else the legacy OLLAMA_MODEL)."""
+        return self.ollama_ocr_model or self.ollama_model
+
+    @property
+    def evaluation_model(self) -> str:
+        """Effective evaluation model (dedicated setting, else OLLAMA_MODEL)."""
+        return self.ollama_evaluation_model or self.ollama_model
+
+    @property
     def storage_root(self) -> Path:
         p = Path(self.storage_path)
         if not p.is_absolute():
@@ -185,8 +207,16 @@ class Settings(BaseSettings):
                 "(ENVIRONMENT=test). The application will refuse to start the "
                 "mock provider for real submissions."
             )
-        if self.ai_provider == "ollama" and not self.ollama_model:
-            out.append("AI_PROVIDER=ollama but OLLAMA_MODEL is empty.")
+        if self.ai_provider == "ollama" and not self.ocr_model:
+            out.append(
+                "AI_PROVIDER=ollama but neither OLLAMA_OCR_MODEL nor OLLAMA_MODEL "
+                "is set."
+            )
+        if self.ai_provider == "ollama" and not self.evaluation_model:
+            out.append(
+                "AI_PROVIDER=ollama but neither OLLAMA_EVALUATION_MODEL nor "
+                "OLLAMA_MODEL is set."
+            )
         if self.is_production and self.storage_provider == "s3" and not self.s3_bucket:
             out.append("STORAGE_PROVIDER=s3 but S3_BUCKET is empty.")
         if self.is_production and self.expose_demo_credentials:

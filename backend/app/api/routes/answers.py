@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections import defaultdict
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -12,7 +13,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import CurrentUser, DbSession, OwnedAnswer, OwnedSubmission
 from app.api.rate_limit import limiter
 from app.db.enums import JobType
-from app.models.answer import Answer, AnswerRegion
+from app.models.answer import Answer, AnswerRegion, OCRResult
 from app.models.exam import Question
 from app.models.submission import SubmissionPage
 from app.schemas.answer import (
@@ -22,17 +23,30 @@ from app.schemas.answer import (
     AnswerRegionOut,
     EvaluationCriterionOut,
     EvaluationOut,
+    OCRProvenanceOut,
+    PageMappingUpdate,
     ReviewOut,
     ReviewRequest,
+    TranscriptionUpdate,
 )
 from app.schemas.job import JobOut
-from app.services import evaluation_service, job_service, review_service, submission_service
-from app.services.page_mapping import build_answer_page_mapping
+from app.services import (
+    audit_service,
+    evaluation_service,
+    job_service,
+    review_service,
+    submission_service,
+)
+from app.services.page_mapping import PAGE_MAPPING_OVERRIDE_KEY, build_answer_page_mapping
 from app.services.review_service import ReviewError
 
 router = APIRouter(tags=["answers"])
 
 _eval_limits = limiter(240, 60, scope="evaluate")
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 async def _submission_pages(db: DbSession, submission_id: uuid.UUID) -> list[SubmissionPage]:
@@ -148,8 +162,36 @@ async def get_answer(answer: OwnedAnswer, db: DbSession) -> AnswerDetail:
         for c in answer.question.criteria
     ]
     detail.evaluation = _evaluation_out(evaluation) if evaluation else None
+    detail.ocr = await _ocr_out(db, answer)
     detail.reviews = [ReviewOut.model_validate(r) for r in sorted(answer.reviews, key=lambda r: r.created_at, reverse=True)]
     return detail
+
+
+async def _ocr_out(db: DbSession, answer: Answer) -> OCRProvenanceOut | None:
+    """OCR provenance for this answer's transcription (newest page result)."""
+    row = (
+        await db.execute(
+            select(OCRResult)
+            .join(SubmissionPage, OCRResult.page_id == SubmissionPage.id)
+            .join(AnswerRegion, AnswerRegion.page_id == SubmissionPage.id)
+            .where(AnswerRegion.answer_id == answer.id)
+            .order_by(OCRResult.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    status = str((row.raw_response or {}).get("ocr_status") or "") or None
+    return OCRProvenanceOut(
+        model=row.model,
+        provider=row.provider,
+        prompt_version=row.prompt_version,
+        confidence=row.confidence,
+        duration_ms=row.duration_ms,
+        ocr_status=status,
+        is_mock=row.is_mock,
+        completed_at=row.created_at,
+    )
 
 
 def _evaluation_out(evaluation) -> EvaluationOut:
@@ -157,6 +199,10 @@ def _evaluation_out(evaluation) -> EvaluationOut:
     data.criteria = [
         EvaluationCriterionOut.model_validate(c) for c in evaluation.criteria
     ]
+    data.needs_human_review = any(c.needs_human_review for c in evaluation.criteria) or any(
+        "human review" in str(f).lower() for f in (evaluation.flags or [])
+    )
+    data.evaluation_completed_at = evaluation.created_at
     return data
 
 
@@ -199,6 +245,96 @@ async def evaluate_answer(
     await db.flush()
     await job_service.notify_pending()
     return JobOut.model_validate(job)
+
+
+@router.patch("/answers/{answer_id}/transcription", response_model=AnswerDetail)
+async def correct_transcription(
+    payload: TranscriptionUpdate,
+    answer: OwnedAnswer,
+    db: DbSession,
+    user: CurrentUser,
+) -> AnswerDetail:
+    """Save an examiner-corrected transcription for one answer.
+
+    The AI suggestion is never overwritten in place: the original OCR output
+    stays in ``ocr_results.raw_response`` (and ``Answer.transcription`` holds
+    the examiner's text from now on), and the correction is recorded in the
+    audit trail.
+    """
+    previous = answer.transcription
+    answer.transcription = payload.transcription
+    # The teacher read the script: the handwriting is no longer "uncertain".
+    answer.is_handwriting_uncertain = False
+    answer.detection_meta = {
+        **(answer.detection_meta or {}),
+        "transcription_corrected_by_examiner": True,
+        "transcription_corrected_at": _now_iso(),
+        "transcription_corrected_by": str(user.id),
+    }
+    await db.flush()
+    await audit_service.record(
+        db,
+        action="answer.transcription_corrected",
+        entity_type="answer",
+        actor=user,
+        entity_id=answer.id,
+        description="Examiner corrected the AI transcription.",
+        old_value={"transcription": previous},
+        new_value={"transcription": answer.transcription},
+    )
+    return await get_answer(answer, db)
+
+
+@router.put("/answers/{answer_id}/pages", response_model=AnswerDetail)
+async def correct_page_mapping(
+    payload: PageMappingUpdate,
+    answer: OwnedAnswer,
+    db: DbSession,
+    user: CurrentUser,
+) -> AnswerDetail:
+    """Save an examiner-corrected answer ↔ page mapping.
+
+    The mapping is stored under ``detection_meta.page_mapping_override`` and
+    wins over anything detection inferred — question numbers are never
+    assumed to equal page numbers. Existing overlay regions are kept, but the
+    read path only shows regions on the corrected pages.
+    """
+    pages = await _submission_pages(db, answer.submission_id)
+    known = {p.page_number for p in pages}
+    unknown = [n for n in payload.page_numbers if n not in known]
+    if unknown:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Page(s) {', '.join(str(n) for n in unknown)} do not exist in "
+                f"this submission (it has {len(pages)} page(s))."
+            ),
+        )
+
+    previous = (answer.detection_meta or {}).get(PAGE_MAPPING_OVERRIDE_KEY)
+    answer.detection_meta = {
+        **(answer.detection_meta or {}),
+        PAGE_MAPPING_OVERRIDE_KEY: {
+            "page_numbers": list(payload.page_numbers),
+            "updated_at": _now_iso(),
+            "actor_id": str(user.id),
+        },
+    }
+    await db.flush()
+    await audit_service.record(
+        db,
+        action="answer.page_mapping_corrected",
+        entity_type="answer",
+        actor=user,
+        entity_id=answer.id,
+        description=(
+            "Examiner corrected the pages this answer appears on: "
+            + ", ".join(str(n) for n in payload.page_numbers)
+        ),
+        old_value={PAGE_MAPPING_OVERRIDE_KEY: previous},
+        new_value={PAGE_MAPPING_OVERRIDE_KEY: answer.detection_meta.get(PAGE_MAPPING_OVERRIDE_KEY)},
+    )
+    return await get_answer(answer, db)
 
 
 @router.put("/answers/{answer_id}/review", response_model=AnswerDetail)

@@ -77,6 +77,31 @@ async def notify_pending() -> None:
     await _wake_workers()
 
 
+async def any_running(db: AsyncSession) -> bool:
+    """Whether any pipeline job is currently in flight.
+
+    Used by the AI status endpoint to report ``processing`` honestly: work is
+    queued or running, so a model may be loading or inference in progress.
+    """
+    row = (
+        await db.execute(
+            select(ProcessingJob.id)
+            .where(ProcessingJob.status == JobStatus.RUNNING)
+            .limit(1)
+        )
+    ).first()
+    if row is not None:
+        return True
+    pending = (
+        await db.execute(
+            select(ProcessingJob.id)
+            .where(ProcessingJob.status == JobStatus.PENDING)
+            .limit(1)
+        )
+    ).first()
+    return pending is not None
+
+
 async def claim_next(worker_id: str) -> ProcessingJob | None:
     """Atomically claim the next due job, or return ``None`` if the queue is idle."""
     now = dt.datetime.now(dt.UTC)

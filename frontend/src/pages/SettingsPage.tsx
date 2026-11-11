@@ -1,5 +1,5 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 
 import { useCrumbs } from "@/components/layout/AppShell";
 import { PageContainer, PageHeader } from "@/components/layout/PageHeader";
@@ -9,7 +9,9 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { useToast } from "@/components/ui/Toaster";
 import { useAuth } from "@/auth/AuthContext";
 import { authApi, systemApi } from "@/lib/api";
+import { aiStatusMeta } from "@/lib/aiStatus";
 import { formatDateTime, titleCase } from "@/lib/format";
+import type { AiModelStatus } from "@/lib/types";
 
 import { errorText } from "./ExamsPage";
 
@@ -17,9 +19,33 @@ export function SettingsPage() {
   useCrumbs([{ label: "Settings" }]);
   const { user, refreshUser } = useAuth();
   const { notify } = useToast();
+  const queryClient = useQueryClient();
 
   const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: () => systemApi.settings() });
   const auditQuery = useQuery({ queryKey: ["audit-logs"], queryFn: () => systemApi.auditLogs({ limit: 25 }) });
+
+  const settings = settingsQuery.data;
+  const ai = settings?.ai;
+  const aiMeta = aiStatusMeta(ai?.status);
+
+  // Real model check: once settings load, run an actual inference request so
+  // "Ready" always comes from a real Ollama call — never from a cached label.
+  // Cheap when the result is still fresh (backend caches it for a short TTL).
+  const probeMutation = useMutation({
+    mutationFn: (force: boolean) => systemApi.aiProbe(force),
+    onSuccess: (data) => {
+      queryClient.setQueryData(["settings"], (old: typeof settings) =>
+        old ? { ...old, ai: data.ai } : old,
+      );
+    },
+  });
+  const probedRef = useRef(false);
+  useEffect(() => {
+    if (!settings || probedRef.current) return;
+    probedRef.current = true;
+    probeMutation.mutate(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
 
   const [profile, setProfile] = useState({
     full_name: user?.full_name ?? "",
@@ -51,8 +77,6 @@ export function SettingsPage() {
     onError: (err) => notify("Could not change password", { tone: "critical", detail: errorText(err) }),
   });
 
-  const settings = settingsQuery.data;
-
   return (
     <PageContainer>
       <PageHeader title="Settings" description="Runtime configuration, your account and the audit trail." />
@@ -76,39 +100,61 @@ export function SettingsPage() {
                   <span className="flex items-center gap-space-xs">
                     <StatusBadge
                       tone={
-                        settings.ai.status === "ok"
+                        aiMeta.tone === "healthy"
                           ? "verified"
-                          : settings.ai.status === "model_missing"
-                            ? "critical"
-                            : "review"
+                          : aiMeta.tone === "pending"
+                            ? "review"
+                            : "critical"
                       }
-                      label={
-                        settings.ai.status === "ok"
-                          ? "Available"
-                          : settings.ai.status === "model_missing"
-                            ? "Model missing"
-                            : "Unavailable"
-                      }
+                      label={aiMeta.label}
                     />
-                    <span className="font-mono">{settings.ai.provider}</span>
+                    <span className="font-mono">
+                      {settings.ai.provider_display_name || settings.ai.provider}
+                    </span>
                   </span>
                 }
               />
+              <ModelRow
+                label="OCR model"
+                model={settings.ai.ocr_model || settings.ai.model}
+                state={settings.ai.models?.ocr}
+                fallbackStatus={settings.ai.status}
+                fallbackDetail={settings.ai.ocr_detail}
+              />
+              <ModelRow
+                label="Evaluation model"
+                model={settings.ai.evaluation_model || settings.ai.model}
+                state={settings.ai.models?.evaluation}
+                fallbackStatus={settings.ai.status}
+                fallbackDetail={settings.ai.evaluation_detail}
+              />
               <Row
-                label="Model"
+                label="Availability"
                 value={
                   <span className="flex flex-col gap-0.5">
-                    <span>{settings.ai.display_name}</span>
-                    <span className="font-mono text-[11px] text-outline">{settings.ai.model || "—"}</span>
+                    <span>{aiMeta.label}</span>
+                    <span className="text-[11px] text-on-surface-variant">{settings.ai.detail}</span>
                   </span>
                 }
               />
               <Row
                 label="Capabilities"
                 value={
-                  <span className="font-mono">
-                    OCR {settings.ai.ocr_enabled ? "on" : "off"} · evaluation{" "}
-                    {settings.ai.evaluation_enabled ? "on" : "off"}
+                  <span className="flex flex-col gap-0.5 font-mono">
+                    <span className="flex items-center gap-space-xs">
+                      <Icon
+                        name={settings.ai.ocr_available ? "verified" : "error"}
+                        className={`text-[14px] ${settings.ai.ocr_available ? "text-verified-fg" : "text-critical-fg"}`}
+                      />
+                      OCR: {settings.ai.ocr_available ? "Available" : "Unavailable"}
+                    </span>
+                    <span className="flex items-center gap-space-xs">
+                      <Icon
+                        name={settings.ai.evaluation_available ? "verified" : "error"}
+                        className={`text-[14px] ${settings.ai.evaluation_available ? "text-verified-fg" : "text-critical-fg"}`}
+                      />
+                      Evaluation: {settings.ai.evaluation_available ? "Available" : "Unavailable"}
+                    </span>
                   </span>
                 }
               />
@@ -133,20 +179,46 @@ export function SettingsPage() {
           ) : (
             <p className="p-space-md  text-body-sm text-critical-fg">{errorText(settingsQuery.error)}</p>
           )}
-          {settings && settings.ai.status !== "ok" ? (
-            <p className="m-space-md mt-0 flex items-start gap-space-sm rounded border border-critical-border bg-critical-bg px-space-sm py-2  text-body-sm text-critical-fg">
-              <Icon name="error" className="text-[16px]" />
-              <span>
-                {settings.ai.detail}{" "}
-                {settings.ai.status === "model_missing" ? (
-                  <span className="font-mono">ollama pull {settings.ai.model}</span>
-                ) : null}
-              </span>
-            </p>
+          {settings && aiMeta.tone !== "healthy" ? (
+            <div className="m-space-md mt-0 flex flex-col gap-space-sm rounded border border-critical-border bg-critical-bg px-space-sm py-2  text-body-sm text-critical-fg">
+              <p className="flex items-start gap-space-sm">
+                <Icon name="error" className="text-[16px]" />
+                <span>
+                  <strong className="font-semibold">{aiMeta.label}.</strong> {settings.ai.detail}
+                </span>
+              </p>
+              <div className="flex items-center justify-between gap-space-sm pl-space-lg">
+                <span className="font-mono text-[11px]">
+                  {settings.ai.status === "model_not_installed"
+                    ? `ollama pull ${settings.ai.ocr_model || settings.ai.model}  ·  ollama pull ${settings.ai.evaluation_model || settings.ai.model}`
+                    : settings.ai.base_url || "Ollama is not reachable."}
+                </span>
+                <button
+                  type="button"
+                  className="btn-secondary px-space-sm py-1  text-label-sm"
+                  onClick={() => probeMutation.mutate(true)}
+                  disabled={probeMutation.isPending}
+                >
+                  {probeMutation.isPending ? <Spinner className="h-3 w-3" /> : null}
+                  Run model check
+                </button>
+              </div>
+            </div>
           ) : settings ? (
-            <p className="m-space-md mt-0 flex items-start gap-space-sm rounded border border-outline-variant bg-surface-container-lowest px-space-sm py-2  text-body-sm text-on-surface-variant">
-              <Icon name="verified" className="text-[16px]" />
-              {settings.ai.detail}
+            <p className="m-space-md mt-0 flex items-start justify-between gap-space-sm rounded border border-outline-variant bg-surface-container-lowest px-space-sm py-2  text-body-sm text-on-surface-variant">
+              <span className="flex items-start gap-space-sm">
+                <Icon name="verified" className="text-[16px]" />
+                <span>{settings.ai.detail}</span>
+              </span>
+              <button
+                type="button"
+                className="shrink-0 font-mono text-[11px] underline-offset-2 hover:underline"
+                onClick={() => probeMutation.mutate(true)}
+                disabled={probeMutation.isPending}
+                title="Send a real inference request to Ollama"
+              >
+                {probeMutation.isPending ? "Checking…" : "Re-check"}
+              </button>
             </p>
           ) : null}
         </section>
@@ -274,6 +346,47 @@ function Row({ label, value }: { label: string; value: React.ReactNode }) {
     <div className="flex items-center justify-between gap-space-md px-space-md py-2">
       <dt className="text-on-surface-variant">{label}</dt>
       <dd className="text-right text-on-surface">{value}</dd>
+    </div>
+  );
+}
+
+/**
+ * One configured model (OCR or evaluation) with its *real* runtime status.
+ * Every value comes from the backend payload — labels included — so nothing
+ * about a model is hardcoded in the UI.
+ */
+function ModelRow({
+  label,
+  model,
+  state,
+  fallbackStatus,
+  fallbackDetail,
+}: {
+  label: string;
+  model: string;
+  state?: AiModelStatus;
+  fallbackStatus: string;
+  fallbackDetail?: string;
+}) {
+  const status = state?.status || fallbackStatus;
+  const meta = aiStatusMeta(status);
+  const displayName = state?.label || model || "—";
+  return (
+    <div className="flex items-center justify-between gap-space-md px-space-md py-2">
+      <dt className="text-on-surface-variant">{label}</dt>
+      <dd className="flex flex-col items-end gap-0.5 text-right text-on-surface">
+        <span className="flex items-center gap-space-xs">
+          <StatusBadge
+            tone={meta.tone === "healthy" ? "verified" : meta.tone === "pending" ? "review" : "critical"}
+            label={meta.label}
+          />
+          <span>{displayName} — {label === "OCR model" ? "OCR" : "Evaluation"}</span>
+        </span>
+        <span className="font-mono text-[11px] text-outline">{model || "—"}</span>
+        <span className="max-w-[26rem] text-[11px] text-on-surface-variant">
+          {state?.detail || fallbackDetail || ""}
+        </span>
+      </dd>
     </div>
   );
 }

@@ -238,6 +238,12 @@ export interface EvaluationCriterion {
   satisfied: boolean;
   comment: string | null;
   order_index: number;
+  /** Verbatim quotes from the student's answer justifying the award. */
+  evidence: string[];
+  /** Rubric elements the answer did not cover. */
+  missing_elements: string[];
+  /** The model asked a human to double-check this criterion. */
+  needs_human_review: boolean;
 }
 
 export interface Evaluation {
@@ -246,6 +252,10 @@ export interface Evaluation {
   provider: string;
   model: string;
   model_version: string | null;
+  /** The OCR model whose transcription this evaluation graded. */
+  ocr_model: string | null;
+  /** When the OCR pass feeding this evaluation completed. */
+  ocr_completed_at: string | null;
   prompt_version: string;
   engine_version: string;
   is_mock: boolean;
@@ -261,7 +271,26 @@ export interface Evaluation {
   flags: string[];
   validation_notes: string[];
   criteria: EvaluationCriterion[];
+  /** The model asked for a human check of this result. */
+  needs_human_review: boolean;
+  /** Wall-clock inference time of the evaluation request. */
+  processing_duration_ms: number | null;
   created_at: string;
+  /** Alias of `created_at` — when the evaluation completed. */
+  evaluation_completed_at: string | null;
+}
+
+/** Provenance of the OCR pass that produced an answer's transcription. */
+export interface OcrProvenance {
+  model: string | null;
+  provider: string | null;
+  prompt_version: string | null;
+  confidence: number | null;
+  duration_ms: number | null;
+  /** The model's own report: completed | partial | unreadable | unknown. */
+  ocr_status: string | null;
+  is_mock: boolean;
+  completed_at: string | null;
 }
 
 export interface Review {
@@ -289,8 +318,13 @@ export interface AnswerDetail extends Answer {
   regions: AnswerRegion[];
   /** Ordered page mapping the workspace drives the manuscript viewer with. */
   pages: AnswerPage[];
-  /** `regions` (observed) | `detection_meta` (best effort) | `unknown`. */
+  /**
+   * `regions` (observed) | `detection_meta` (best effort) |
+   * `examiner` (teacher-corrected) | `unknown`.
+   */
   page_mapping_source: string | null;
+  /** OCR provenance for this answer's transcription (model, timing, status). */
+  ocr: OcrProvenance | null;
   question_label: string | null;
   question_text: string | null;
   question_type: QuestionType | null;
@@ -383,24 +417,71 @@ export interface AuditLogEntry {
   created_at: string;
 }
 
+/** One model row of the Settings screen (real per-model runtime state). */
+export interface AiModelStatus {
+  name: string;
+  /** Short human label derived from the model name, e.g. "Qwen3-VL 2B". */
+  label: string;
+  role: "ocr" | "evaluation" | string;
+  installed: boolean | null;
+  loaded: boolean | null;
+  /** Whether the model accepts image input (null when unverified). */
+  vision_capable: boolean | null;
+  /** connected | model_loading | processing | model_not_installed | … */
+  status: string;
+  detail: string;
+  /** Present after a probe: whether this model's real inference succeeded. */
+  ok?: boolean;
+  inference_ok?: boolean | null;
+  inference_ms?: number | null;
+}
+
 export interface AppSettings {
   app_name: string;
   environment: string;
   version: string;
   ai: {
     provider: string;
+    /** Human label for the provider itself, e.g. "Ollama Local AI". */
+    provider_display_name: string;
     model: string;
-    /** Human label for the configured model, e.g. "Gemma 3 4B · Local". */
+    /** Human label for the configured model, e.g. "Qwen2.5 1.5B · Local". */
     display_name: string;
+    /** The vision model that reads answer-sheet pages. */
+    ocr_model: string;
+    /** The text model that grades transcribed answers. */
+    evaluation_model: string;
+    /** Per-model runtime state: `models.ocr` / `models.evaluation`. */
+    models: Record<string, AiModelStatus>;
     is_mock: boolean;
-    /** ok | unavailable | model_missing (from the backend health probe). */
+    /**
+     * Live health-check state from the backend:
+     * connected | model_loading | processing | ready | unavailable | error |
+     * model_not_installed | inference_error
+     */
     status: string;
     /** Actionable explanation, e.g. "Run: ollama pull gemma3:4b". */
     detail: string;
     available: boolean;
-    model_installed: boolean;
+    /** Ollama reachable (independent of inference verification). */
+    connected: boolean;
+    model_installed: boolean | null;
+    /** Model resident in memory (null when unknown). */
+    model_loaded: boolean | null;
+    /** Model accepts image input (null when unverified). */
+    vision_capable: boolean | null;
+    /** Tri-state: null until a real inference request has been made. */
+    inference_ok: boolean | null;
+    inference_ms: number | null;
+    inference_checked_at: string | null;
+    checked_at: string;
+    base_url: string;
     ocr_enabled: boolean;
     evaluation_enabled: boolean;
+    ocr_available: boolean;
+    evaluation_available: boolean;
+    ocr_detail: string;
+    evaluation_detail: string;
     confidence_high: number;
     confidence_medium: number;
   };

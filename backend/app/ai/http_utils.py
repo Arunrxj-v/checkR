@@ -183,6 +183,9 @@ def map_criteria(
                 "awarded_marks": awarded,
                 "satisfied": bool(raw.get("satisfied", awarded > 0)),
                 "comment": raw.get("comment") or None,
+                "evidence": _str_list(raw.get("evidence")),
+                "missing_elements": _str_list(raw.get("missing_elements")),
+                "needs_human_review": bool(raw.get("needs_human_review", False)),
             }
         )
 
@@ -197,6 +200,19 @@ def map_criteria(
                     "awarded_marks": awarded,
                     "satisfied": bool(raw.get("satisfied", awarded > 0)),
                     "comment": raw.get("comment"),
+                    "evidence": _str_list(raw.get("evidence")),
+                    "missing_elements": _str_list(raw.get("missing_elements")),
+                    "needs_human_review": bool(raw.get("needs_human_review", False)),
                 }
             )
     return result
+
+
+def _str_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if v is not None and str(v).strip()]
+    return [str(value)]

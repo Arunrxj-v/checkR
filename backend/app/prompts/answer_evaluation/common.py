@@ -11,7 +11,7 @@ from app.ai.types import EvaluationContext
 
 #: Version of the evaluation *engine* (validation + orchestration), distinct
 #: from the prompt version. Bump when grading logic changes materially.
-ENGINE_VERSION = "v2"
+ENGINE_VERSION = "v3"
 
 #: The single JSON shape every provider must return.
 JSON_CONTRACT = """\
@@ -20,12 +20,20 @@ Return ONLY a single JSON object with this exact shape (no markdown, no prose):
   "awarded_marks": <number, the total marks awarded for this answer>,
   "confidence": <number between 0 and 1>,
   "reasoning": "<2-5 sentence explanation of the award>",
+  "needs_human_review": <true|false — true when you are unsure and a human
+                         should verify this evaluation>,
   "criteria": [
     {
       "name": "<exact criterion name from the marking scheme>",
       "awarded_marks": <number>,
       "satisfied": <true|false>,
-      "comment": "<one short sentence>"
+      "comment": "<one short sentence>",
+      "evidence": ["<short verbatim quote from the student's answer that
+                   justifies this award — only when marks > 0>"],
+      "missing_elements": ["<rubric element the answer did not cover —
+                           only when marks < maximum>"],
+      "needs_human_review": <true|false — true when this criterion is
+                            ambiguous or you are unsure>
     }
   ],
   "strengths": ["<short point>"],
@@ -42,16 +50,35 @@ Grading principles:
 2. Use the marking scheme exactly: award marks per criterion, never invent criteria.
 3. Award partial marks. Never force a binary correct/incorrect decision.
 4. Do not penalise a student for wording that differs from the expected answer.
-   Reward semantic equivalence.
+   Reward semantic equivalence: equivalent terminology, synonyms and
+   notational variants earn the same marks as the expected wording.
 5. Never reward irrelevant text that merely mentions keywords.
 6. Identify factual errors or contradictions explicitly in "contradictions".
 7. The sum of the criteria's awarded_marks must equal "awarded_marks".
-8. awarded_marks must be between 0 and the maximum marks (inclusive).
-9. The provided OCR transcription may contain recognition errors. Any answer
-   images are authoritative — use them to resolve discrepancies. If the images
-   are unreadable, lower your confidence rather than guessing.
-10. Set "confidence" honestly. Use a value below 0.6 when the handwriting is
+8. awarded_marks must be between 0 and the maximum marks (inclusive), and a
+   criterion's awarded_marks must never exceed that criterion's maximum.
+9. Never award marks for content that is absent from the answer. If the
+   student did not write it, it earns nothing — but if a required element is
+   unreadable rather than absent, do not penalise it: note it under
+   "missing_elements" only when it is genuinely missing, set
+   "needs_human_review" and lower your confidence instead.
+10. Do not deduct marks for spelling, grammar or handwriting quality unless
+    the marking scheme explicitly says so.
+11. Every award above 0 must cite at least one short verbatim quote from the
+    student's answer under that criterion's "evidence". Never invent or
+    paraphrase a quote; if you cannot quote anything, award 0 for that
+    criterion or set needs_human_review.
+12. The provided OCR transcription may contain recognition errors. Any answer
+    images attached are authoritative — use them to resolve discrepancies.
+    If no image is available, base your judgement on the transcription and
+    lower your confidence accordingly; an illegible passage is not the same
+    as an incorrect answer.
+13. Set "confidence" honestly. Use a value below 0.6 when the handwriting is
     unclear or the answer is genuinely ambiguous.
+14. Your marks are a suggestion for a human examiner, never a final decision.
+    When the transcription is uncertain, a criterion is ambiguous, or two
+    interpretations are both defensible, set "needs_human_review" to true
+    rather than guessing confidently.
 """
 
 

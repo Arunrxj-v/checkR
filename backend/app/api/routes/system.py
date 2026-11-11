@@ -40,11 +40,15 @@ def _now() -> str:
 def _capability_detail(kind: str, payload: dict) -> str:
     """Human explanation of why a capability is (un)available."""
     status = payload["status"]
-    model = payload.get("model") or "the configured model"
+    models = payload.get("models") or {}
+    entry = models.get(kind) if isinstance(models, dict) else None
+    model = (entry or {}).get("name") or payload.get("model") or "the configured model"
     if kind == "ocr" and not payload["ocr_enabled"]:
         return "Handwriting recognition is disabled (OCR_ENABLED=false)."
     if kind == "evaluation" and not payload["evaluation_enabled"]:
         return "AI evaluation is disabled (EVALUATION_ENABLED=false)."
+    if status == "processing":
+        return "Another inference job is running; this model is queued behind it."
     if status == "unavailable":
         return "Ollama is not reachable."
     if status == "error":
@@ -52,14 +56,19 @@ def _capability_detail(kind: str, payload: dict) -> str:
     if status == "model_not_installed":
         return f"{model} is not installed. Run: ollama pull {model}"
     if status == "inference_error":
+        if entry and entry.get("detail"):
+            return str(entry["detail"])
         return "Inference is failing; see the availability message."
     if kind == "ocr":
-        vision = payload.get("vision_capable")
+        vision = (entry or {}).get("vision_capable", payload.get("vision_capable"))
         if vision is False:
             return f"{model} does not accept image input (no vision capability)."
         if vision is None:
             return "Vision support could not be confirmed from Ollama."
-        return "Vision model available for handwriting recognition."
+        label = (entry or {}).get("label")
+        return f"{label} — OCR" if label else "Vision model available for handwriting recognition."
+    if entry and entry.get("label"):
+        return f"{entry['label']} — Evaluation model available."
     return "Model available for answer evaluation."
 
 
@@ -94,8 +103,11 @@ def _failed_ai(detail: str, *, provider=None, status: str = "error") -> dict:
     )
     payload = {
         "provider": name,
+        "provider_display_name": "Ollama Local AI" if name == "ollama" else name,
         "model": model,
         "display_name": (f"{model} · Local" if model else name),
+        "ocr_model": settings.ocr_model if name == "ollama" else model,
+        "evaluation_model": settings.evaluation_model if name == "ollama" else model,
         "is_mock": False,
         "base_url": settings.ollama_base_url if name == "ollama" else "",
         "status": status,
@@ -110,31 +122,64 @@ def _failed_ai(detail: str, *, provider=None, status: str = "error") -> dict:
         "inference_checked_at": None,
         "checked_at": _now(),
         "detail": detail,
+        "models": {},
         "ocr_enabled": settings.ocr_enabled,
         "evaluation_enabled": settings.evaluation_enabled,
     }
     return _apply_capabilities(payload)
 
 
-async def _ai_status() -> dict:
-    """Resolve the configured provider's real status. Never raises."""
+async def _ai_status(db=None) -> dict:
+    """Resolve the configured provider's real status. Never raises.
+
+    When a pipeline job is running (``db`` given) the status is overridden to
+    ``processing``: a model may be loading or inference in flight, and the UI
+    must not claim plain ``ready`` while work is queued.
+    """
     try:
         provider = get_provider()
     except AIProviderError as exc:
         status = "unavailable" if exc.kind == "unavailable" else "error"
-        return _failed_ai(str(exc), status=status)
+        return await _maybe_processing(_failed_ai(str(exc), status=status), db)
     except Exception as exc:  # pragma: no cover - defensive
-        return _failed_ai(f"{type(exc).__name__}: {exc}")
+        return await _maybe_processing(_failed_ai(f"{type(exc).__name__}: {exc}"), db)
 
     try:
         raw = await provider.health()
     except AIProviderError as exc:
         status = "unavailable" if exc.kind == "unavailable" else "error"
-        return _failed_ai(str(exc), provider=provider, status=status)
+        return await _maybe_processing(
+            _failed_ai(str(exc), provider=provider, status=status), db
+        )
     except Exception as exc:  # a broken provider must not 500 the health page
         logger.warning("AI health check failed: %s", exc)
-        return _failed_ai(f"{type(exc).__name__}: {exc}", provider=provider)
-    return _ai_payload(provider, raw)
+        return await _maybe_processing(
+            _failed_ai(f"{type(exc).__name__}: {exc}", provider=provider), db
+        )
+    return await _maybe_processing(_ai_payload(provider, raw), db)
+
+
+async def _maybe_processing(payload: dict, db) -> dict:
+    """Report ``processing`` while a pipeline job is in flight."""
+    if db is None or payload["status"] not in _REACHABLE:
+        return payload
+    try:
+        from app.services import job_service
+
+        if await job_service.any_running(db):
+            payload = dict(payload)
+            payload["status"] = "processing"
+            payload["available"] = False
+            payload["detail"] = (
+                "An inference job is running — the model is busy processing an "
+                "answer sheet. This status clears when it finishes."
+            )
+            for entry in (payload.get("models") or {}).values():
+                if isinstance(entry, dict):
+                    entry["status"] = "processing"
+    except Exception as exc:  # status check must never break the endpoint
+        logger.debug("Could not check running jobs: %s", exc)
+    return payload
 
 
 def _ai_payload(provider, raw: dict) -> dict:
@@ -162,6 +207,10 @@ def _ai_payload(provider, raw: dict) -> dict:
     payload.setdefault("model_installed", None)
     payload.setdefault("model_loaded", None)
     payload.setdefault("vision_capable", None)
+    payload.setdefault("ocr_model", payload.get("model", ""))
+    payload.setdefault("evaluation_model", payload.get("model", ""))
+    payload.setdefault("provider_display_name", payload["provider"])
+    payload.setdefault("models", {})
     # Tri-state: None until a real inference request has been made.
     payload.setdefault("inference_ok", None)
     payload.setdefault("inference_ms", None)
@@ -185,7 +234,7 @@ async def health(db: DbSession) -> HealthResponse:
     except Exception as exc:  # pragma: no cover - depends on outage
         db_status = f"error: {type(exc).__name__}"
 
-    ai = await _ai_status()
+    ai = await _ai_status(db)
     storage = await storage_health()
 
     return HealthResponse(
@@ -201,21 +250,27 @@ async def health(db: DbSession) -> HealthResponse:
 
 
 @router.get("/settings")
-async def get_settings(user: CurrentUser) -> dict:
+async def get_settings(user: CurrentUser, db: DbSession) -> dict:
     """Runtime configuration surfaced to the Settings screen (no secrets).
 
     The ``ai`` block reflects the live health check (see :func:`_ai_status`),
-    never the mere existence of a provider object.
+    never the mere existence of a provider object. It carries per-model
+    entries (``models.ocr`` / ``models.evaluation``) so the Settings screen
+    can show each model's own real status.
     """
-    ai = await _ai_status()
+    ai = await _ai_status(db)
     return {
         "app_name": settings.app_name,
         "environment": settings.environment,
         "version": __version__,
         "ai": {
             "provider": ai["provider"],
+            "provider_display_name": ai["provider_display_name"],
             "model": ai["model"],
             "display_name": ai["display_name"],
+            "ocr_model": ai["ocr_model"],
+            "evaluation_model": ai["evaluation_model"],
+            "models": ai["models"],
             "is_mock": ai["is_mock"],
             "status": ai["status"],
             "detail": ai["detail"],
@@ -249,12 +304,19 @@ async def get_settings(user: CurrentUser) -> dict:
 
 
 @router.post("/system/ai/probe")
-async def probe_ai(user: CurrentUser, force: bool = Query(default=False)) -> dict:
-    """Run a real inference request against the configured model.
+async def probe_ai(
+    user: CurrentUser, db: DbSession, force: bool = Query(default=False)
+) -> dict:
+    """Run a real inference request against the configured models.
 
     This is the only endpoint that can move the status to ``ready``: it sends
-    an actual ``POST /api/chat`` to Ollama. ``force=True`` bypasses the cached
-    result. Used by the Settings screen's model check.
+    an actual ``POST /api/chat`` per model (sequentially) to Ollama.
+    ``force=True`` bypasses the cached result. Used by the Settings screen's
+    model check.
+
+    If an inference job currently holds the single-inference slot, no probe
+    request is sent — loading a model on top of a running job would contend
+    for the same 8 GB of memory — and the response reports ``processing``.
     """
     try:
         provider = get_provider()
@@ -266,13 +328,18 @@ async def probe_ai(user: CurrentUser, force: bool = Query(default=False)) -> dic
     if not callable(probe):
         # Non-Ollama providers (test suite) have no chat endpoint to probe;
         # report their health truthfully instead of claiming success.
-        return {"ai": await _ai_status()}
+        return {"ai": await _ai_status(db)}
+
+    from app.db.advisory import try_inference_slot
+
+    if not await try_inference_slot():
+        return {"ai": await _ai_status(db)}
 
     try:
         await probe(force=force)
     except Exception as exc:  # probe must not 500 the Settings page
         logger.warning("AI inference probe failed: %s", exc)
-    return {"ai": await _ai_status()}
+    return {"ai": await _ai_status(db)}
 
 
 @router.get("/audit-logs", response_model=Page[dict])

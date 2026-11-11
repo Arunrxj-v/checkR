@@ -138,5 +138,7 @@ class OCRResult(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     regions: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
     raw_response: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
     is_mock: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    #: Wall-clock inference time for this page (None when not measured).
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
 
     page: Mapped[SubmissionPage] = relationship(back_populates="ocr_results")  # noqa: F821

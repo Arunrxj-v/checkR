@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -72,6 +74,14 @@ class Evaluation(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     raw_response: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
     validation_notes: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
 
+    # --- Provenance: which models produced this result and how long it took -- #
+    #: The OCR model whose transcription this evaluation graded.
+    ocr_model: Mapped[str | None] = mapped_column(String(120))
+    #: When the OCR pass feeding this evaluation completed.
+    ocr_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Wall-clock inference time of the evaluation request.
+    processing_duration_ms: Mapped[int | None] = mapped_column(Integer)
+
     answer: Mapped[Answer] = relationship(back_populates="evaluations")  # noqa: F821
     criteria: Mapped[list[EvaluationCriterion]] = relationship(
         back_populates="evaluation",
@@ -95,6 +105,12 @@ class EvaluationCriterion(UUIDPrimaryKeyMixin, Base):
     satisfied: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text)
     order_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    #: Verbatim quotes from the student's answer justifying this award.
+    evidence: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    #: Rubric elements the answer did not cover.
+    missing_elements: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    #: True when the model asked a human to double-check this criterion.
+    needs_human_review: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     evaluation: Mapped[Evaluation] = relationship(back_populates="criteria")
 

@@ -152,6 +152,8 @@ def validate_evaluation(
     scheme_by_name = {str(c.get("name", "")).strip().lower(): float(c.get("max_marks", 0) or 0) for c in scheme}
 
     clean_criteria: list[CriterionOutcome] = []
+    evidence_flags: list[str] = []
+    criteria_need_review = False
     for crit in result.criteria or []:
         key = crit.name.strip().lower()
         criterion_max = scheme_by_name.get(key, crit.max_marks)
@@ -167,6 +169,20 @@ def validate_evaluation(
                 f"{criterion_max:g}); clamped."
             )
             awarded = criterion_max
+
+        evidence = [str(s).strip() for s in (crit.evidence or []) if str(s).strip()]
+        missing = [str(s).strip() for s in (crit.missing_elements or []) if str(s).strip()]
+        needs_review = bool(crit.needs_human_review)
+        if needs_review:
+            criteria_need_review = True
+        # A partial award must be backed by quoted evidence from the answer.
+        # Never invent evidence to satisfy the rule — flag it for a human.
+        if 0 < awarded < criterion_max and not evidence:
+            evidence_flags.append(
+                f"Criterion '{crit.name}' received partial marks without cited "
+                "evidence — verify manually."
+            )
+
         clean_criteria.append(
             CriterionOutcome(
                 name=crit.name,
@@ -174,6 +190,9 @@ def validate_evaluation(
                 awarded_marks=float(awarded),
                 satisfied=bool(crit.satisfied),
                 comment=crit.comment,
+                evidence=evidence,
+                missing_elements=missing,
+                needs_human_review=needs_review,
             )
         )
 
@@ -211,6 +230,11 @@ def validate_evaluation(
         flags.append("Low confidence evaluation — verify against the original script.")
     if result.contradictions:
         flags.append("The model identified possible factual errors or contradictions.")
+    if result.needs_human_review:
+        flags.append("The model asked for human review of this evaluation.")
+    if criteria_need_review:
+        flags.append("The model asked a human to double-check specific criteria.")
+    flags.extend(evidence_flags)
 
     sanitized = replace(
         result,

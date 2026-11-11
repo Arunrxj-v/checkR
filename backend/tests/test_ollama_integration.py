@@ -1,11 +1,13 @@
-"""Real inference smoke test — exercises actual Ollama + ``gemma3:4b``.
+"""Real inference smoke test — exercises actual Ollama with the dual-model
+pipeline (``qwen3-vl:2b-instruct-q4_K_M`` for OCR, ``qwen2.5:1.5b`` for
+evaluation).
 
 The test generates a handwritten answer sheet (macOS handwriting font), runs
 the real pipeline (OCR -> segmentation -> evaluation) against the local Ollama
 server, and then walks the teacher through accept/override so provenance and
 score separation are verified against genuine model output.
 
-It is skipped automatically when Ollama is unreachable or the model is not
+It is skipped automatically when Ollama is unreachable or either model is not
 installed, so the normal suite stays offline and fast. Force-skip with::
 
     CHECKR_SKIP_OLLAMA_TESTS=1 pytest tests/test_ollama_integration.py
@@ -53,9 +55,11 @@ def _runtime_ready() -> tuple[bool, str]:
         names = [str(m.get("name", "")) for m in resp.json().get("models", [])]
     except Exception as exc:  # noqa: BLE001 - any transport problem means "skip"
         return False, f"Ollama not reachable at {settings.ollama_base_url}: {exc}"
-    model = settings.ollama_model
-    if model not in names and f"{model}:latest" not in names:
-        return False, f"{model} is not installed (run: ollama pull {model})"
+    model = settings.ocr_model
+    eval_model = settings.evaluation_model
+    for needed in dict.fromkeys((model, eval_model)):
+        if needed not in names and f"{needed}:latest" not in names:
+            return False, f"{needed} is not installed (run: ollama pull {needed})"
     return True, ""
 
 
@@ -139,10 +143,10 @@ async def test_real_ocr_evaluation_and_teacher_review(client, db, live_provider)
     ocr = (await db.execute(select(OCRResult))).scalars().one()
     assert ocr.is_mock is False
     assert ocr.provider == "ollama"
-    assert ocr.model == settings.ollama_model
-    assert ocr.prompt_version.startswith("handwriting_v")
+    assert ocr.model == settings.ocr_model
+    assert ocr.prompt_version == "handwriting_v3"
     assert 0.0 <= float(ocr.confidence) <= 1.0
-    print("\n=== REAL OCR (gemma3:4b) ===")
+    print(f"\n=== REAL OCR ({settings.ocr_model}) ===")
     print(ocr.text)
 
     # The handwriting must actually have been read (loose: vision models vary).
@@ -179,7 +183,7 @@ async def test_real_ocr_evaluation_and_teacher_review(client, db, live_provider)
     for evaluation in evaluations:
         assert evaluation.is_mock is False
         assert evaluation.provider == "ollama"
-        assert evaluation.model == settings.ollama_model
+        assert evaluation.model == settings.evaluation_model
         assert evaluation.prompt_version
         assert evaluation.engine_version
         assert 0.0 <= float(evaluation.awarded_marks) <= float(evaluation.max_marks)
@@ -193,7 +197,7 @@ async def test_real_ocr_evaluation_and_teacher_review(client, db, live_provider)
             ).scalar_one()
             assert flagged.is_flagged is True
 
-    print("\n=== REAL EVALUATION (gemma3:4b) ===")
+    print(f"\n=== REAL EVALUATION ({settings.evaluation_model}) ===")
     for evaluation in evaluations:
         print(
             f"{evaluation.awarded_marks}/{evaluation.max_marks} "
@@ -255,10 +259,16 @@ async def test_real_model_reports_its_identity(client, live_provider):
     """The settings/health payload names the real local model for the UI."""
     health = await live_provider.health()
     assert health["provider"] == "ollama"
-    assert health["model"] == settings.ollama_model
+    assert health["model"] == settings.evaluation_model
+    assert health["ocr_model"] == settings.ocr_model
+    assert health["evaluation_model"] == settings.evaluation_model
+    assert health["provider_display_name"] == "Ollama Local AI"
     assert health["is_mock"] is False
     assert health["ok"] is True
     assert health["display_name"].endswith("· Local")
     assert health["ocr_enabled"] is True
     assert health["evaluation_enabled"] is True
-    print(f"\n=== MODEL IDENTITY ===\n{health['display_name']} ({health['model']})")
+    print(
+        f"\n=== MODELS ===\n{health['provider_display_name']}: "
+        f"{health['ocr_model']} (OCR) + {health['evaluation_model']} (evaluation)"
+    )

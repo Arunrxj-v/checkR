@@ -194,7 +194,8 @@ async def test_missing_model_fails_with_the_pull_command(client, db, monkeypatch
         await provider.aclose()
 
     message = str(excinfo.value)
-    assert f"ollama pull {settings.ollama_model}" in message
+    assert f"ollama pull {settings.ocr_model}" in message
+    assert f"ollama pull {settings.evaluation_model}" in message
     row = await _row(db, submission["id"])
     assert row.status == SubmissionStatus.FAILED
     assert (await db.execute(select(OCRResult))).scalars().all() == []
