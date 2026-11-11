@@ -20,17 +20,19 @@ from tests.test_review_results import _answers, _processed_submission
 async def test_examiner_corrects_transcription_without_touching_ai_output(client, db):
     headers, exam, submission = await _processed_submission(client, db)
     answer = (await _answers(db, submission["id"]))[0]
+    answer_id = answer.id
 
     original_ocr = (
         await db.execute(select(OCRResult).where(OCRResult.page_id.is_not(None)))
     ).scalars().first()
+    original_ocr_id = original_ocr.id
     original_text = original_ocr.text
     original_raw = dict(original_ocr.raw_response)
     original_ai_suggestion = answer.transcription
 
     corrected = "1. The algorithm runs in a single pass and uses O(n) time."
     resp = await client.patch(
-        f"/api/answers/{answer.id}/transcription",
+        f"/api/answers/{answer_id}/transcription",
         json={"transcription": corrected},
         headers=headers,
     )
@@ -44,12 +46,12 @@ async def test_examiner_corrects_transcription_without_touching_ai_output(client
     # The original OCR row (model output) is untouched: the correction lives
     # only on the answer, and the AI suggestion is still auditable.
     stored_ocr = (
-        await db.execute(select(OCRResult).where(OCRResult.id == original_ocr.id))
+        await db.execute(select(OCRResult).where(OCRResult.id == original_ocr_id))
     ).scalar_one()
     assert stored_ocr.text == original_text
     assert dict(stored_ocr.raw_response) == original_raw
 
-    detail = (await db.execute(select(Answer).where(Answer.id == answer.id))).scalar_one()
+    detail = (await db.execute(select(Answer).where(Answer.id == answer_id))).scalar_one()
     assert detail.transcription == corrected
     assert detail.detection_meta["transcription_corrected_by_examiner"] is True
     assert original_ai_suggestion != corrected  # sanity: the correction moved
@@ -59,7 +61,7 @@ async def test_examiner_corrects_transcription_without_touching_ai_output(client
             await db.execute(
                 select(AuditLog).where(
                     AuditLog.action == "answer.transcription_corrected",
-                    AuditLog.entity_id == answer.id,
+                    AuditLog.entity_id == answer_id,
                 )
             )
         )
@@ -74,6 +76,7 @@ async def test_examiner_corrects_transcription_without_touching_ai_output(client
 async def test_examiner_corrects_page_mapping(client, db):
     headers, exam, submission = await _processed_submission(client, db)
     answer = (await _answers(db, submission["id"]))[0]
+    answer_id = answer.id
     from app.models.submission import SubmissionPage
 
     pages = (
@@ -91,7 +94,7 @@ async def test_examiner_corrects_page_mapping(client, db):
     target = pages[0].page_number
 
     resp = await client.put(
-        f"/api/answers/{answer.id}/pages",
+        f"/api/answers/{answer_id}/pages",
         json={"page_numbers": [target]},
         headers=headers,
     )
@@ -103,13 +106,13 @@ async def test_examiner_corrects_page_mapping(client, db):
         assert page["uncertain"] is False
 
     # The correction persists and wins on the next read.
-    reread = await client.get(f"/api/answers/{answer.id}", headers=headers)
+    reread = await client.get(f"/api/answers/{answer_id}", headers=headers)
     assert reread.status_code == 200
     assert reread.json()["page_mapping_source"] == SOURCE_EXAMINER
     assert [p["page_number"] for p in reread.json()["pages"]] == [target]
 
     db.expire_all()
-    stored = (await db.execute(select(Answer).where(Answer.id == answer.id))).scalar_one()
+    stored = (await db.execute(select(Answer).where(Answer.id == answer_id))).scalar_one()
     override = stored.detection_meta[PAGE_MAPPING_OVERRIDE_KEY]
     assert override["page_numbers"] == [target]
     assert override["actor_id"]
@@ -119,7 +122,7 @@ async def test_examiner_corrects_page_mapping(client, db):
             await db.execute(
                 select(AuditLog).where(
                     AuditLog.action == "answer.page_mapping_corrected",
-                    AuditLog.entity_id == answer.id,
+                    AuditLog.entity_id == answer_id,
                 )
             )
         )

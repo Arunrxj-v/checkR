@@ -447,7 +447,10 @@ list. Highlights:
 | `AI_PROVIDER` | `ollama` | `ollama` \| `local` \| `gemini` \| `openai` \| `anthropic` (`mock` is for the test suite only) |
 | `AI_API_KEY` | *(empty)* | Provider credential — never hard-coded |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint; compose overrides it to `http://host.docker.internal:11434` for containers |
-| `OLLAMA_MODEL` | `gemma3:4b` | Model used for handwriting OCR and evaluation |
+| `OLLAMA_OCR_MODEL` | `qwen3-vl:2b-instruct-q4_K_M` | Vision model used for handwriting OCR / answer-sheet reading |
+| `OLLAMA_EVALUATION_MODEL` | `qwen2.5:1.5b` | Text model used for rubric evaluation & criterion grading |
+| `OLLAMA_UNLOAD_AFTER_STAGE` | `true` | Unload model at stage boundaries (8 GB memory optimization) |
+| `OLLAMA_NUM_CTX` | `4096` | Context window size |
 | `OLLAMA_PROBE_TIMEOUT` / `OLLAMA_INFERENCE_TTL` | `90` / `60` | Settings model-check timeout / health-check result reuse (seconds) |
 | `AI_CONFIDENCE_HIGH` / `AI_CONFIDENCE_MEDIUM` | `0.85` / `0.60` | Confidence banding |
 | `STORAGE_PROVIDER` | `local` | `local` \| `s3` |
@@ -520,21 +523,86 @@ AI_MODEL=gemma3:4b
 
 ---
 
-## Local inference with Ollama
+## Local inference with Ollama (Qwen3-VL + Qwen2.5)
 
-CheckR runs on **local Ollama inference** (`AI_PROVIDER=ollama`, the default):
-`gemma3:4b` handles both handwriting recognition (vision) and evaluation, and the
-Settings screen reports the runtime's real state — reachable, model installed,
-inference verified (`Connected` → `Ready`), or an actionable failure
-(`unavailable`, `model_not_installed`, `inference_error`). "Ready" is only ever
-reported after an actual `POST /api/chat` succeeds; nothing is assumed from the
-existence of a provider object.
+CheckR runs on **local Ollama inference** (`AI_PROVIDER=ollama`, the default) using a specialized dual-model architecture designed to fit comfortably within the 8 GB unified memory of an Apple Silicon M1:
 
+1. **OCR / Vision Model (`qwen3-vl:2b-instruct-q4_K_M`)**: Reads scanned handwritten student answer sheets, detects question numbers and bounding regions, transcribes handwriting faithfully without guessing or completing text, and flags illegible segments.
+2. **Answer Evaluation Model (`qwen2.5:1.5b`)**: Compares extracted answers against the exam's marking scheme and individual criteria, produces suggested partial marks, quotes verbatim evidence from the student's text, lists missing elements, explains reasoning, and flags ambiguous answers for human review.
+
+### Prerequisites & Model Download
+
+If Ollama is not installed:
+```bash
+# macOS
+brew install ollama
+# Or download directly from https://ollama.com
+```
+
+Start the Ollama daemon:
 ```bash
 ollama serve &
-ollama pull gemma3:4b
-docker compose up -d          # backend/worker reach the host via host.docker.internal
 ```
+
+Check existing models:
+```bash
+ollama list
+```
+
+If the required models are not yet installed on your machine, download them:
+```bash
+ollama pull qwen3-vl:2b-instruct-q4_K_M
+ollama pull qwen2.5:1.5b
+```
+*(If already installed, Ollama uses the local copy without re-downloading).*
+
+### Hardware Discipline & 8 GB M1 Optimization
+
+To prevent out-of-memory errors on 8 GB unified memory:
+- **Sequential Execution**: Models are never loaded simultaneously. `qwen3-vl` runs first for page transcription; once OCR for the submission completes, it is unloaded (`keep_alive: 0`). `qwen2.5` then loads to grade the answers against the rubric, and is unloaded once evaluation completes (`OLLAMA_UNLOAD_AFTER_STAGE=true`).
+- **Cross-Process Advisory Locking**: A PostgreSQL session-level advisory lock coordinates inference jobs so that worker processes and API health probes never run concurrent inference or trigger simultaneous model loads.
+- **Bounded Context**: Context length is capped at `OLLAMA_NUM_CTX=4096` to keep KV cache memory small.
+
+### Starting CheckR
+
+With Ollama running locally:
+```bash
+# Docker Compose (backend and worker reach host Ollama via host.docker.internal):
+docker compose up -d
+
+# Or native development:
+# Backend:
+cd backend && source .venv/bin/activate
+uvicorn app.main:app --port 8000 --reload
+
+# Worker:
+python -m app.workers.worker
+
+# Frontend:
+cd frontend && npm run dev
+```
+
+### Verifying Model Availability
+
+- **Via CLI / API**:
+  ```bash
+  curl -s http://localhost:11434/api/tags
+  curl -s http://localhost:8000/api/settings | jq .ai
+  ```
+- **Via CheckR UI**:
+  Navigate to **Settings** (`/settings`). The "Evaluation engine" panel displays:
+  - Runtime provider: `Ollama Local AI`
+  - Current status: `Connected`, `Ready`, `Model loading`, `Processing`, etc.
+  - OCR Model: `Qwen3-VL 2B` (`qwen3-vl:2b-instruct-q4_K_M`)
+  - Evaluation Model: `Qwen2.5 1.5B` (`qwen2.5:1.5b`)
+  - Click **Check models** to trigger a real live inference probe across both models.
+
+### Troubleshooting
+
+- **Ollama unreachable (`unavailable`)**: Ensure `ollama serve` is running and accessible at `http://localhost:11434` (or `http://host.docker.internal:11434` inside Docker containers).
+- **Model not installed (`model_not_installed`)**: Run `ollama list` to verify exact model tags. If missing, pull via `ollama pull <model_name>`.
+- **Model loading timeout**: On cold boot, small models take 5–15 seconds to load weights into unified memory. The Settings probe uses a 90-second timeout to accommodate initial cold-load.
+- **Inference busy (`processing`)**: CheckR serializes inference jobs so only one job runs at a time. The status will return to `Ready` automatically when the active evaluation job finishes.
 
 ---
 
